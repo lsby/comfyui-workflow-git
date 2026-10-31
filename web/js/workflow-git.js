@@ -252,11 +252,13 @@ class WorkflowGitUI {
 
       // Populate file selects
       const fileSelect = this.overlay.querySelector("#wfg-history-file-select");
+      const currentSelected = fileSelect.value;
       fileSelect.innerHTML = '<option value="">All Workflow Commits</option>';
       files.forEach((f) => {
         const opt = document.createElement("option");
         opt.value = f;
         opt.textContent = f;
+        if (f === currentSelected) opt.selected = true;
         fileSelect.appendChild(opt);
       });
 
@@ -337,9 +339,17 @@ class WorkflowGitUI {
       data.history.forEach((item) => {
         const card = document.createElement("div");
         card.className = "workflow-git-commit-card";
+        const primaryFile = item.primary_file || (item.files && item.files[0]) || "";
+        const fileTag = primaryFile
+          ? `<span style="background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); padding: 1px 6px; border-radius: 4px;">📄 ${primaryFile}</span>`
+          : "";
+
         card.innerHTML = `
           <div class="workflow-git-commit-info">
-            <div class="workflow-git-commit-msg">${item.message}</div>
+            <div class="workflow-git-commit-msg" style="display: flex; align-items: center; gap: 8px;">
+              <span>${item.message}</span>
+              ${fileTag}
+            </div>
             <div class="workflow-git-commit-meta">
               <span class="workflow-git-hash">${item.short_hash}</span>
               <span>${item.date}</span>
@@ -347,13 +357,15 @@ class WorkflowGitUI {
             </div>
           </div>
           <div style="display: flex; gap: 8px;">
-            <button class="workflow-git-btn workflow-git-btn-sm workflow-git-btn-secondary wfg-restore-btn" data-hash="${item.full_hash}">
+            <button class="workflow-git-btn workflow-git-btn-sm workflow-git-btn-secondary wfg-restore-btn" data-hash="${item.full_hash}" data-file="${primaryFile}">
               Restore
             </button>
           </div>
         `;
 
-        card.querySelector(".wfg-restore-btn").onclick = () => this.restoreCommit(item.full_hash, file);
+        card.querySelector(".wfg-restore-btn").onclick = () => {
+          this.restoreCommit(item.full_hash, primaryFile, item.short_hash, item.message);
+        };
         listEl.appendChild(card);
       });
     } catch (e) {
@@ -361,25 +373,28 @@ class WorkflowGitUI {
     }
   }
 
-  async restoreCommit(commitHash, targetFile) {
-    let file = targetFile;
-    if (!file) {
-      file = prompt("Enter workflow file name to restore from this commit:", "workflow.json");
-      if (!file) return;
-    }
+  async restoreCommit(commitHash, targetFile, shortHash = "", commitMsg = "") {
+    const fileLabel = targetFile || "workflow";
+    const msgLabel = commitMsg ? ` "${commitMsg}"` : "";
+    const hashLabel = shortHash || commitHash.substring(0, 7);
 
-    if (!confirm(`Are you sure you want to restore '${file}' from commit ${commitHash.substring(0, 7)} to canvas? Current unsaved canvas changes will be overwritten.`)) {
+    if (!confirm(`Are you sure you want to restore [${fileLabel}]${msgLabel} (${hashLabel}) onto the canvas? Current unsaved changes will be overwritten.`)) {
       return;
     }
 
     try {
-      const res = await fetch(`/workflow-git/checkout?hash=${commitHash}&file=${encodeURIComponent(file)}`);
+      const paramFile = targetFile ? encodeURIComponent(targetFile) : "";
+      const res = await fetch(`/workflow-git/checkout?hash=${commitHash}&file=${paramFile}`);
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
 
-      app.loadGraphData(data.workflow);
-      showToast(`✔ Restored workflow from commit ${commitHash.substring(0, 7)}`);
-      this.hide();
+      if (data.workflow) {
+        app.loadGraphData(data.workflow);
+        showToast(`✔ Restored [${data.file || fileLabel}] from commit ${hashLabel}`);
+        this.hide();
+      } else {
+        throw new Error("No workflow data found in commit content");
+      }
     } catch (e) {
       alert(`Failed to restore: ${e.message}`);
     }
@@ -433,7 +448,6 @@ app.registerExtension({
         // Fallback to DOM injection
       }
 
-      // Try searching for Manager button in TopBar
       const managerBtn = Array.from(document.querySelectorAll("button")).find(
         (b) => b.textContent && b.textContent.includes("Manager")
       );

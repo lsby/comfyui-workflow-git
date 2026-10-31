@@ -9,7 +9,6 @@ def register_api_routes(app: web.Application, git_service, config_manager):
     @routes.get("/workflow-git/status")
     async def get_status(request):
         try:
-            # Always ensure target_dir points to native workflows directory
             git_service.target_dir = config_manager.resolve_workflows_dir()
             status = git_service.get_status()
             config = config_manager.get_config()
@@ -55,6 +54,8 @@ def register_api_routes(app: web.Application, git_service, config_manager):
         try:
             git_service.target_dir = config_manager.resolve_workflows_dir()
             file_name = request.query.get("file", None)
+            if file_name:
+                file_name = file_name.strip()
             limit = int(request.query.get("limit", 50))
             history = git_service.get_history(file_name=file_name, limit=limit)
             return web.json_response({"success": True, "history": history})
@@ -66,19 +67,20 @@ def register_api_routes(app: web.Application, git_service, config_manager):
         try:
             git_service.target_dir = config_manager.resolve_workflows_dir()
             commit_hash = request.query.get("hash", "").strip()
-            file_name = request.query.get("file", "").strip()
-            if not commit_hash or not file_name:
-                return web.json_response({"success": False, "error": "Missing hash or file parameter"}, status=400)
+            file_name = request.query.get("file", "").strip() or None
+            if not commit_hash:
+                return web.json_response({"success": False, "error": "Missing commit hash parameter"}, status=400)
 
-            content = git_service.get_file_content_at_commit(commit_hash, file_name)
-            if content is None:
-                return web.json_response({"success": False, "error": "File or commit not found"}, status=404)
+            result = git_service.get_file_content_at_commit(commit_hash, file_name)
+            if result is None:
+                return web.json_response({"success": False, "error": "Workflow file or commit not found in repository"}, status=404)
 
+            actual_file, content = result
             try:
                 parsed = json.loads(content)
-                return web.json_response({"success": True, "workflow": parsed})
+                return web.json_response({"success": True, "file": actual_file, "workflow": parsed})
             except Exception:
-                return web.json_response({"success": True, "raw_content": content})
+                return web.json_response({"success": True, "file": actual_file, "raw_content": content})
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 

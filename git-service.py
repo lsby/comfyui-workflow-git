@@ -2,17 +2,17 @@ import subprocess
 import os
 import json
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 class GitService:
     def __init__(self, target_dir: Path):
         self.target_dir = target_dir
 
     def _run_git(self, args: List[str]) -> subprocess.CompletedProcess:
-        """Run a git command in the target directory."""
+        """Run a git command with UTF-8 encoding and unescaped Chinese characters."""
         self.target_dir.mkdir(parents=True, exist_ok=True)
         return subprocess.run(
-            ["git"] + args,
+            ["git", "-c", "core.quotepath=false"] + args,
             cwd=str(self.target_dir),
             capture_output=True,
             text=True,
@@ -43,6 +43,9 @@ class GitService:
         if res.returncode != 0:
             return {"success": False, "error": res.stderr}
 
+        # Ensure core.quotepath is false
+        self._run_git(["config", "core.quotepath", "false"])
+
         # Create sensible .gitignore if not present
         gitignore_path = self.target_dir / ".gitignore"
         if not gitignore_path.exists():
@@ -63,11 +66,9 @@ class GitService:
                 "uncommitted": []
             }
 
-        # Get current branch
         branch_res = self._run_git(["branch", "--show-current"])
-        branch = branch_res.stdout.strip() if branch_res.returncode == 0 else "main"
+        branch = branch_res.stdout.strip() if branch_res.returncode == 0 and branch_res.stdout.strip() else "master"
 
-        # Get status
         status_res = self._run_git(["status", "--porcelain"])
         uncommitted = []
         if status_res.returncode == 0 and status_res.stdout.strip():
@@ -90,7 +91,6 @@ class GitService:
             return []
         files = []
         for p in self.target_dir.rglob("*.json"):
-            # Exclude .git and submodules
             if ".git" not in p.parts:
                 rel = p.relative_to(self.target_dir)
                 files.append(str(rel).replace("\\", "/"))
@@ -102,15 +102,12 @@ class GitService:
             if not init_res.get("success"):
                 return {"success": False, "error": f"Failed to initialize repository: {init_res.get('error')}"}
 
-        # Ensure filename ends with .json
         if not file_name.endswith(".json"):
             file_name += ".json"
 
-        # Clean filename
         file_path = self.target_dir / file_name
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Format and save JSON
         try:
             parsed = json.loads(workflow_json_str)
             formatted_json = json.dumps(parsed, indent=2, ensure_ascii=False)
@@ -120,22 +117,18 @@ class GitService:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(formatted_json)
 
-        # Git add
         add_res = self._run_git(["add", file_name])
         if add_res.returncode != 0:
             return {"success": False, "error": f"Git add failed: {add_res.stderr}"}
 
-        # Commit message
         commit_msg = message.strip() if message.strip() else f"update: {file_name}"
         commit_res = self._run_git(["commit", "-m", commit_msg])
 
         if commit_res.returncode != 0:
-            # Check if working tree clean
             if "nothing to commit" in commit_res.stdout or "nothing to commit" in commit_res.stderr:
                 return {"success": True, "message": "No changes to commit (already up to date)", "file": file_name}
             return {"success": False, "error": f"Git commit failed: {commit_res.stderr or commit_res.stdout}"}
 
-        # Get latest commit hash
         hash_res = self._run_git(["rev-parse", "--short", "HEAD"])
         commit_hash = hash_res.stdout.strip() if hash_res.returncode == 0 else ""
 
@@ -150,8 +143,13 @@ class GitService:
         if not self.is_repo():
             return []
 
-        # %H (full hash) | %h (short hash) | %an (author) | %ad (date) | %s (subject)
-        cmd = ["log", f"-n{limit}", '--pretty=format:%H|%h|%an|%ad|%s', "--date=format:%Y-%m-%d %H:%M:%S"]
+        cmd = [
+            "log",
+            f"-n{limit}",
+            "--name-only",
+            "--pretty=format:__C__%H|%h|%an|%ad|%s",
+            "--date=format:%Y-%m-%d %H:%M:%S"
+        ]
         if file_name:
             cmd.extend(["--", file_name])
 
@@ -160,23 +158,59 @@ class GitService:
             return []
 
         history = []
-        for line in res.stdout.splitlines():
-            parts = line.strip().split("|", 4)
+        raw_entries = res.stdout.split("__C__")
+        for entry in raw_entries:
+            entry = entry.strip()
+            if not entry:
+                continue
+            lines = entry.splitlines()
+            header = lines[0].strip()
+            parts = header.split("|", 4)
             if len(parts) == 5:
+                # The remaining lines are changed files
+                files = [l.strip().strip('"') for l in lines[1:] if l.strip() and l.strip().strip('"').endswith(".json")]
                 history.append({
                     "full_hash": parts[0],
                     "short_hash": parts[1],
                     "author": parts[2],
                     "date": parts[3],
-                    "message": parts[4]
+                    "message": parts[4],
+                    "files": files,
+                    "primary_file": files[0] if files else ""
                 })
 
         return history
 
-    def get_file_content_at_commit(self, commit_hash: str, file_name: str) -> Optional[str]:
+    def get_file_content_at_commit(self, commit_hash: str, file_name: Optional[str] = None) -> Optional[Tuple[str, str]]:
+        """
+        Returns (actual_filename, content_str) or None.
+        Auto-recovers if file_name is missing, inaccurate, or renamed.
+        """
         if not self.is_repo():
             return None
-        res = self._run_git(["show", f"{commit_hash}:{file_name}"])
-        if res.returncode == 0:
-            return res.stdout
+
+        # 1. Try requested file_name if provided
+        if file_name:
+            res = self._run_git(["show", f"{commit_hash}:{file_name}"])
+            if res.returncode == 0:
+                return (file_name, res.stdout)
+
+        # 2. Try looking up changed files in this specific commit
+        show_files = self._run_git(["show", "--name-only", "--pretty=format:", commit_hash])
+        if show_files.returncode == 0 and show_files.stdout.strip():
+            json_files = [f.strip().strip('"') for f in show_files.stdout.splitlines() if f.strip().strip('"').endswith(".json")]
+            for jf in json_files:
+                res = self._run_git(["show", f"{commit_hash}:{jf}"])
+                if res.returncode == 0:
+                    return (jf, res.stdout)
+
+        # 3. Last fallback: list all files in that commit tree
+        ls_res = self._run_git(["ls-tree", "-r", "--name-only", commit_hash])
+        if ls_res.returncode == 0 and ls_res.stdout.strip():
+            tree_files = [f.strip().strip('"') for f in ls_res.stdout.splitlines() if f.strip().strip('"').endswith(".json")]
+            for tf in tree_files:
+                res = self._run_git(["show", f"{commit_hash}:{tf}"])
+                if res.returncode == 0:
+                    return (tf, res.stdout)
+
         return None
