@@ -173,20 +173,39 @@ class WorkflowGitUI {
 
   detectCurrentWorkflowName() {
     try {
+      // 1. From document.title: e.g. "*最简工作流 (2) - ComfyUI"
+      if (document.title) {
+        let title = document.title
+          .replace(/^[*•\s]+/, "")
+          .replace(/\s*-\s*ComfyUI.*$/i, "")
+          .trim();
+        if (title) {
+          // If ends with (数字), e.g. "最简工作流 (2)" -> "最简工作流.json"
+          title = title.replace(/\s*\(\d+\)$/, "").trim();
+          if (title && title.toLowerCase() !== "comfyui") {
+            return title.endsWith(".json") ? title : `${title}.json`;
+          }
+        }
+      }
+
+      // 2. From UI elements
       const tabEl = document.querySelector(".comfyui-workflow-tab.active, [data-testid='workflow-tab-active']");
       if (tabEl && tabEl.textContent.trim()) {
-        let name = tabEl.textContent.trim().replace(/^\*/, "").trim();
+        let name = tabEl.textContent.trim().replace(/^[*•\s]+/, "").trim();
+        name = name.replace(/\s*\(\d+\)$/, "").trim();
         if (name) return name.endsWith(".json") ? name : `${name}.json`;
       }
 
       const titleEl = document.querySelector(".comfy-topbar-title, .comfyui-workflow-name");
       if (titleEl && titleEl.textContent.trim()) {
-        let name = titleEl.textContent.trim().replace(/^\*/, "").trim();
+        let name = titleEl.textContent.trim().replace(/^[*•\s]+/, "").trim();
+        name = name.replace(/\s*\(\d+\)$/, "").trim();
         if (name) return name.endsWith(".json") ? name : `${name}.json`;
       }
 
       if (app.workflowManager?.activeWorkflow?.name) {
-        let name = app.workflowManager.activeWorkflow.name.replace(/^\*/, "").trim();
+        let name = app.workflowManager.activeWorkflow.name.replace(/^[*•\s]+/, "").trim();
+        name = name.replace(/\s*\(\d+\)$/, "").trim();
         if (name) return name.endsWith(".json") ? name : `${name}.json`;
       }
     } catch (e) {
@@ -199,7 +218,7 @@ class WorkflowGitUI {
     this.overlay.classList.add("active");
     const detectedName = this.detectCurrentWorkflowName();
     const fileNameInput = this.overlay.querySelector("#wfg-filename");
-    if (fileNameInput && (!fileNameInput.value || fileNameInput.value === "workflow.json")) {
+    if (fileNameInput) {
       fileNameInput.value = detectedName;
     }
     await this.refreshStatus();

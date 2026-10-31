@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 DEFAULT_CONFIG = {
-    "workflows_dir": "",
+    "workflows_dir": "../../user/default/workflows",
     "auto_git_init": True
 }
 
@@ -41,31 +41,20 @@ class ConfigManager:
     def resolve_workflows_dir(self) -> Path:
         config = self.get_config()
         raw_path = config.get("workflows_dir", "").strip()
-        
-        # 1. If explicit config exists and target folder exists, use it
-        if raw_path:
+
+        # 1. Check if user configured a non-default custom path
+        if raw_path and raw_path != DEFAULT_CONFIG["workflows_dir"]:
             p = Path(raw_path)
             resolved = (self.plugin_dir / p).resolve() if not p.is_absolute() else p.resolve()
-            if resolved.exists():
-                return resolved
+            return resolved
 
-        # 2. Auto-detect: search upwards for custom '工作流' folder first (highest priority)
-        for parent in self.plugin_dir.parents:
-            candidate = parent / "工作流"
-            if candidate.exists() and candidate.is_dir():
-                return candidate.resolve()
-
-        # 3. Next search for 'workflows' or ComfyUI user workflows
-        for parent in self.plugin_dir.parents:
-            candidate = parent / "workflows"
-            if candidate.exists() and candidate.is_dir():
-                return candidate.resolve()
-            candidate_user = parent / "user" / "default" / "workflows"
-            if candidate_user.exists() and candidate_user.is_dir():
-                return candidate_user.resolve()
-
-        # 4. Fallback
-        return (self.plugin_dir.parents[2] / "工作流").resolve()
+        # 2. Priority: ComfyUI native user workflows folder (../../user/default/workflows)
+        # Structure: custom_nodes/comfyui-workflow-git -> ComfyUI -> user/default/workflows
+        comfyui_root = self.plugin_dir.parents[1]
+        native_workflows = comfyui_root / "user" / "default" / "workflows"
+        if not native_workflows.exists():
+            native_workflows.mkdir(parents=True, exist_ok=True)
+        return native_workflows.resolve()
 
     def get_relative_or_absolute_display_path(self) -> str:
         resolved = self.resolve_workflows_dir()
