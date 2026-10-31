@@ -1,4 +1,5 @@
 import json
+import shutil
 import urllib.parse
 from aiohttp import web
 from pathlib import Path
@@ -109,6 +110,129 @@ def register_api_routes(app: web.Application, version_service, config_manager):
 
             ok = version_service.rename_workflow(src, dst)
             return web.json_response({"success": ok})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    @routes.get("/workflow-git/folders")
+    async def list_folders_endpoint(request):
+        try:
+            wf_dir = config_manager.resolve_workflows_dir()
+            folders = []
+            for p in wf_dir.rglob("*"):
+                if p.is_dir():
+                    rel_parts = p.relative_to(wf_dir).parts
+                    if not any(part.startswith(".") for part in rel_parts):
+                        folders.append(p.relative_to(wf_dir).as_posix())
+            folders.sort()
+            return web.json_response({"success": True, "folders": folders})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    @routes.post("/workflow-git/folder/create")
+    async def create_folder_endpoint(request):
+        try:
+            wf_dir = config_manager.resolve_workflows_dir()
+            version_service.workflows_dir = wf_dir
+            version_service.storage_dir = wf_dir / ".workflow_versions"
+            data = await request.json()
+            folder_name = data.get("folder", "").replace("\\", "/").strip("/")
+            if not folder_name:
+                return web.json_response({"success": False, "error": "Folder name required"}, status=400)
+
+            target_dir = wf_dir / folder_name
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+            # Check if any .json workflows already exist
+            files = [f for f in target_dir.iterdir() if f.is_file() and f.name.endswith(".json")]
+            starter_created = False
+            if not files:
+                starter_file = target_dir / "未命名工作流.json"
+                starter_data = {
+                    "nodes": [],
+                    "links": [],
+                    "extra": {"note": "新文件夹初始工作流"}
+                }
+                with open(starter_file, "w", encoding="utf-8") as f:
+                    json.dump(starter_data, f, indent=2, ensure_ascii=False)
+                rel_file = f"{folder_name}/未命名工作流.json"
+                version_service.save_version(rel_file, json.dumps(starter_data), "新建文件夹初始工作流")
+                starter_created = True
+
+            return web.json_response({"success": True, "folder": folder_name, "starter_created": starter_created})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    @routes.post("/workflow-git/folder/rename")
+    async def rename_folder_endpoint(request):
+        try:
+            wf_dir = config_manager.resolve_workflows_dir()
+            version_service.workflows_dir = wf_dir
+            version_service.storage_dir = wf_dir / ".workflow_versions"
+            data = await request.json()
+            src = data.get("src", "").replace("\\", "/").strip("/")
+            dst = data.get("dst", "").replace("\\", "/").strip("/")
+            if not src or not dst:
+                return web.json_response({"success": False, "error": "Missing src or dst"}, status=400)
+
+            src_path = wf_dir / src
+            dst_path = wf_dir / dst
+            if not src_path.exists() or not src_path.is_dir():
+                return web.json_response({"success": False, "error": f"Folder {src} not found"}, status=404)
+
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src_path), str(dst_path))
+
+            # Migrate version history
+            version_service.rename_workflow(src, dst)
+            return web.json_response({"success": True, "src": src, "dst": dst})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    @routes.post("/workflow-git/folder/delete")
+    async def delete_folder_endpoint(request):
+        try:
+            wf_dir = config_manager.resolve_workflows_dir()
+            storage_dir = wf_dir / ".workflow_versions"
+            data = await request.json()
+            folder = data.get("folder", "").replace("\\", "/").strip("/")
+            if not folder:
+                return web.json_response({"success": False, "error": "Folder name required"}, status=400)
+
+            target = wf_dir / folder
+            if target.exists() and target.is_dir():
+                shutil.rmtree(str(target), ignore_errors=True)
+
+            target_storage = storage_dir / folder
+            if target_storage.exists():
+                shutil.rmtree(str(target_storage), ignore_errors=True)
+
+            return web.json_response({"success": True})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    @routes.post("/workflow-git/move")
+    async def move_item_endpoint(request):
+        try:
+            wf_dir = config_manager.resolve_workflows_dir()
+            version_service.workflows_dir = wf_dir
+            version_service.storage_dir = wf_dir / ".workflow_versions"
+            data = await request.json()
+            src = data.get("src", "").replace("\\", "/").strip("/")
+            dst = data.get("dst", "").replace("\\", "/").strip("/")
+            if not src or not dst:
+                return web.json_response({"success": False, "error": "Missing src or dst"}, status=400)
+
+            src_path = wf_dir / src
+            dst_path = wf_dir / dst
+            if not src_path.exists():
+                return web.json_response({"success": False, "error": f"Source file {src} not found"}, status=404)
+
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src_path), str(dst_path))
+
+            # Migrate version history
+            version_service.rename_workflow(src, dst)
+            return web.json_response({"success": True, "src": src, "dst": dst})
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 

@@ -21,6 +21,94 @@ function showToast(message, duration = 3000) {
   setTimeout(() => toast.classList.remove("active"), duration);
 }
 
+// Trigger ComfyUI's internal Pinia workflow store refresh
+async function triggerComfySyncWorkflows() {
+  try {
+    const vueApp = document.querySelector("#vue-app")?.__vue_app__;
+    const pinia = vueApp?.config?.globalProperties?.$pinia;
+    const workflowStore = pinia?._s?.get("workflow");
+    if (workflowStore && typeof workflowStore.syncWorkflows === "function") {
+      await workflowStore.syncWorkflows();
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+// Custom Context Menu popup helper
+function showCustomContextMenu(x, y, items) {
+  document.querySelectorAll(".wfg-context-menu").forEach((el) => el.remove());
+
+  const menu = document.createElement("div");
+  menu.className = "wfg-context-menu";
+
+  const maxX = window.innerWidth - 180;
+  const maxY = window.innerHeight - (items.length * 36 + 20);
+  menu.style.left = `${Math.min(x, maxX)}px`;
+  menu.style.top = `${Math.min(y, maxY)}px`;
+
+  items.forEach((it) => {
+    if (it.divider) {
+      const div = document.createElement("div");
+      div.className = "wfg-context-divider";
+      menu.appendChild(div);
+      return;
+    }
+    const itemEl = document.createElement("div");
+    itemEl.className = `wfg-context-item ${it.danger ? "danger" : ""}`;
+    itemEl.innerHTML = `<span>${it.icon || ""}</span><span>${it.label}</span>`;
+    itemEl.onclick = async (e) => {
+      e.stopPropagation();
+      menu.remove();
+      try {
+        await it.onClick();
+      } catch (err) {
+        alert(err.message || "操作失败");
+      }
+    };
+    menu.appendChild(itemEl);
+  });
+
+  document.body.appendChild(menu);
+
+  const closeListener = (e) => {
+    if (!menu.contains(e.target)) {
+      menu.remove();
+      document.removeEventListener("pointerdown", closeListener);
+    }
+  };
+  setTimeout(() => document.addEventListener("pointerdown", closeListener), 10);
+}
+
+// Extract folder/file relative path from any DOM tree item by climbing parents
+function getTreeNodeRelPath(el) {
+  const parts = [];
+  let curr = el.closest(".p-treenode, [role='treeitem']");
+  while (curr) {
+    const labelEl = curr.querySelector(".p-treenode-label, [class*='node-label'], [class*='label']");
+    if (labelEl) {
+      const text = labelEl.textContent.trim().replace(/^[*•\s]+/, "").trim();
+      if (text && text.toLowerCase() !== "root" && text.toLowerCase() !== "browse" && text.toLowerCase() !== "浏览") {
+        parts.unshift(text);
+      }
+    }
+    const parentChildrenList = curr.parentElement?.closest(".p-treenode-children, [role='group']");
+    curr = parentChildrenList ? parentChildrenList.closest(".p-treenode, [role='treeitem']") : null;
+  }
+  return parts.join("/");
+}
+
+// Check if tree node represents a folder
+function isTreeNodeFolder(el) {
+  const node = el.closest(".p-treenode, [role='treeitem']");
+  if (!node) return false;
+  const hasToggle = node.querySelector(".p-tree-node-toggle-button, [data-pc-section='nodetogglebutton']");
+  const hasChildren = node.querySelector(".p-treenode-children, [role='group']");
+  const labelEl = node.querySelector(".p-treenode-label, [class*='node-label']");
+  const label = labelEl ? labelEl.textContent.trim() : "";
+  return Boolean(hasToggle || hasChildren || (label && !label.toLowerCase().endsWith(".json")));
+}
+
 let lastKnownWorkflowName = "最简工作流.json";
 
 // Validate and clean workflow names, strictly filtering out execution progress strings
@@ -369,6 +457,17 @@ class SidebarVersionIntegration {
     commitBar.className = "wfg-sidebar-commit-container";
 
     commitBar.innerHTML = `
+      <div class="wfg-action-toolbar">
+        <button id="wfg-btn-new-folder" class="wfg-tool-btn" title="在工作流目录新建文件夹">
+          📁+ 新建文件夹
+        </button>
+        <button id="wfg-btn-new-workflow" class="wfg-tool-btn" title="新建空白工作流">
+          📄+ 新建工作流
+        </button>
+        <button id="wfg-btn-refresh-tree" class="wfg-tool-btn" title="刷新工作流与文件夹树">
+          🔄 刷新列表
+        </button>
+      </div>
       <div class="wfg-sidebar-commit-header">
         <div class="wfg-sidebar-file-badge">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -403,6 +502,9 @@ class SidebarVersionIntegration {
           <button id="wfg-page-next" class="wfg-page-btn" title="下一页">下一页 ▶</button>
         </div>
       </div>
+      <div id="wfg-root-drop-zone" class="wfg-root-drop-zone">
+        📥 拖拽到此处移动到【根目录】
+      </div>
     `;
 
     // Place right below search box
@@ -433,6 +535,24 @@ class SidebarVersionIntegration {
         this.renderHistoryPage(commitBar, getCurrentWorkflowName());
       }
     };
+
+    // Hook toolbar buttons
+    const btnNewFolder = commitBar.querySelector("#wfg-btn-new-folder");
+    const btnNewWorkflow = commitBar.querySelector("#wfg-btn-new-workflow");
+    const btnRefreshTree = commitBar.querySelector("#wfg-btn-refresh-tree");
+
+    if (btnNewFolder) btnNewFolder.onclick = () => this.promptCreateFolder();
+    if (btnNewWorkflow) btnNewWorkflow.onclick = () => this.promptCreateWorkflow();
+    if (btnRefreshTree) {
+      btnRefreshTree.onclick = async () => {
+        await triggerComfySyncWorkflows();
+        showToast("🔄 工作流列表已刷新");
+      };
+    }
+
+    // Setup right click context menu & drag and drop
+    this.setupContextMenu(panel);
+    this.setupDragAndDrop(panel);
 
     // Initialize version metadata and render initial list
     this.syncActiveWorkflowMetadata(currentName, commitBar);
@@ -644,6 +764,322 @@ class SidebarVersionIntegration {
 
       listEl.appendChild(node);
     });
+  }
+
+  async promptCreateFolder(parentFolder = "") {
+    const hint = parentFolder ? `在 [${parentFolder}] 下新建子文件夹名称:` : "请输入新文件夹名称 (例如: 动漫风格 或 SDXL/二次元):";
+    let name = prompt(hint);
+    if (!name) return;
+    name = name.trim().replace(/^[/\\*]+|[/\\*]+$/g, "");
+    if (!name) return;
+
+    const fullPath = parentFolder ? `${parentFolder}/${name}` : name;
+    try {
+      const res = await fetch("/workflow-git/folder/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder: fullPath })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "创建文件夹失败");
+
+      await triggerComfySyncWorkflows();
+      showToast(`📁 文件夹已创建: ${fullPath}`);
+    } catch (err) {
+      alert(`创建文件夹失败: ${err.message}`);
+    }
+  }
+
+  async promptCreateWorkflow(targetFolder = "") {
+    const hint = targetFolder ? `在 [${targetFolder}] 下新建工作流名称:` : "请输入新建工作流名称:";
+    let name = prompt(hint, "新工作流");
+    if (!name) return;
+    name = name.trim();
+    if (!name.endsWith(".json")) name += ".json";
+
+    const relFile = targetFolder ? `${targetFolder}/${name}` : name;
+    const blankWorkflow = {
+      nodes: [],
+      links: [],
+      extra: { note: "新建空白工作流" }
+    };
+
+    try {
+      const res = await fetch("/workflow-git/commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          file_name: relFile,
+          message: "初始空白工作流",
+          workflow: blankWorkflow
+        })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "创建工作流失败");
+
+      await triggerComfySyncWorkflows();
+      showToast(`📄 工作流已创建: ${relFile}`);
+    } catch (err) {
+      alert(`创建工作流失败: ${err.message}`);
+    }
+  }
+
+  async promptRenameFolder(folderPath) {
+    const oldName = folderPath.split("/").pop();
+    let newName = prompt(`重命名文件夹 [${oldName}] 为:`, oldName);
+    if (!newName) return;
+    newName = newName.trim().replace(/^[/\\*]+|[/\\*]+$/g, "");
+    if (!newName || newName === oldName) return;
+
+    const parts = folderPath.split("/");
+    parts[parts.length - 1] = newName;
+    const newFullPath = parts.join("/");
+
+    try {
+      const res = await fetch("/workflow-git/folder/rename", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ src: folderPath, dst: newFullPath })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "重命名文件夹失败");
+
+      await triggerComfySyncWorkflows();
+      showToast(`✏️ 文件夹已重命名为: ${newFullPath}`);
+    } catch (err) {
+      alert(`重命名失败: ${err.message}`);
+    }
+  }
+
+  async confirmDeleteFolder(folderPath) {
+    if (!confirm(`确定要删除文件夹 [${folderPath}] 以及其中的所有工作流与历史版本吗？\n此操作将永久清理磁盘文件，无法撤销！`)) {
+      return;
+    }
+    try {
+      const res = await fetch("/workflow-git/folder/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folder: folderPath })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "删除文件夹失败");
+
+      await triggerComfySyncWorkflows();
+      showToast(`🗑️ 文件夹已删除: ${folderPath}`);
+    } catch (err) {
+      alert(`删除失败: ${err.message}`);
+    }
+  }
+
+  async moveWorkflow(srcPath, dstFolder = "") {
+    const filename = srcPath.split("/").pop();
+    const dstPath = dstFolder ? `${dstFolder}/${filename}` : filename;
+    if (srcPath === dstPath) return;
+
+    try {
+      const res = await fetch("/workflow-git/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ src: srcPath, dst: dstPath })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || "移动失败");
+
+      await triggerComfySyncWorkflows();
+      showToast(`🚚 已移动到: ${dstFolder || "根目录"}`);
+    } catch (err) {
+      alert(`移动失败: ${err.message}`);
+    }
+  }
+
+  async promptMoveWorkflow(srcPath) {
+    try {
+      const res = await fetch("/workflow-git/folders");
+      const data = await res.json();
+      const folders = (data.success && data.folders) ? data.folders : [];
+
+      let optionsStr = "输入目标文件夹序号或路径:\n0: [根目录 workflows/]\n";
+      folders.forEach((f, idx) => {
+        optionsStr += `${idx + 1}: ${f}\n`;
+      });
+
+      const input = prompt(optionsStr, "0");
+      if (input === null) return;
+      const trimmed = input.trim();
+      let targetFolder = "";
+
+      const num = parseInt(trimmed, 10);
+      if (!isNaN(num) && num >= 0 && num <= folders.length) {
+        targetFolder = num === 0 ? "" : folders[num - 1];
+      } else {
+        targetFolder = trimmed.replace(/^[/\\*]+|[/\\*]+$/g, "");
+      }
+
+      await this.moveWorkflow(srcPath, targetFolder);
+    } catch (err) {
+      alert(`获取文件夹列表失败: ${err.message}`);
+    }
+  }
+
+  setupContextMenu(panel) {
+    if (panel._wfgContextMenuBound) return;
+    panel._wfgContextMenuBound = true;
+
+    panel.addEventListener("contextmenu", (e) => {
+      const nodeEl = e.target.closest(".p-treenode, [role='treeitem'], .p-tree-node");
+      if (nodeEl) {
+        const isFolder = isTreeNodeFolder(nodeEl);
+        const relPath = getTreeNodeRelPath(nodeEl);
+
+        if (isFolder && relPath) {
+          e.preventDefault();
+          e.stopPropagation();
+          showCustomContextMenu(e.clientX, e.clientY, [
+            {
+              icon: "📁+",
+              label: "新建子文件夹...",
+              onClick: () => this.promptCreateFolder(relPath)
+            },
+            {
+              icon: "📄+",
+              label: "在此新建工作流...",
+              onClick: () => this.promptCreateWorkflow(relPath)
+            },
+            { divider: true },
+            {
+              icon: "✏️",
+              label: `重命名 [${relPath.split("/").pop()}]`,
+              onClick: () => this.promptRenameFolder(relPath)
+            },
+            {
+              icon: "🗑️",
+              label: `删除文件夹`,
+              danger: true,
+              onClick: () => this.confirmDeleteFolder(relPath)
+            }
+          ]);
+          return;
+        }
+
+        if (!isFolder && relPath && relPath.endsWith(".json")) {
+          return;
+        }
+      }
+
+      // Blank space right-click
+      e.preventDefault();
+      showCustomContextMenu(e.clientX, e.clientY, [
+        {
+          icon: "📁+",
+          label: "新建文件夹...",
+          onClick: () => this.promptCreateFolder()
+        },
+        {
+          icon: "📄+",
+          label: "新建工作流...",
+          onClick: () => this.promptCreateWorkflow()
+        },
+        { divider: true },
+        {
+          icon: "🔄",
+          label: "刷新工作流列表",
+          onClick: async () => {
+            await triggerComfySyncWorkflows();
+            showToast("🔄 列表已刷新");
+          }
+        }
+      ]);
+    });
+  }
+
+  setupDragAndDrop(panel) {
+    if (panel._wfgDndBound) return;
+    panel._wfgDndBound = true;
+
+    let activeDragData = null;
+    const rootDropZone = panel.querySelector("#wfg-root-drop-zone");
+
+    const refreshDraggables = () => {
+      const treeNodes = panel.querySelectorAll(".p-treenode, [role='treeitem']");
+      treeNodes.forEach((node) => {
+        const isFolder = isTreeNodeFolder(node);
+        const relPath = getTreeNodeRelPath(node);
+        const contentEl = node.querySelector(".p-treenode-content, [data-pc-section='content']") || node;
+
+        if (!isFolder && relPath && relPath.endsWith(".json")) {
+          contentEl.setAttribute("draggable", "true");
+          contentEl.ondragstart = (e) => {
+            activeDragData = { type: "workflow", relPath, filename: relPath.split("/").pop() };
+            e.dataTransfer.setData("text/plain", JSON.stringify(activeDragData));
+            e.dataTransfer.effectAllowed = "move";
+            if (rootDropZone) rootDropZone.classList.add("active");
+          };
+          contentEl.ondragend = () => {
+            activeDragData = null;
+            if (rootDropZone) rootDropZone.classList.remove("active");
+            panel.querySelectorAll(".wfg-drag-over").forEach((el) => el.classList.remove("wfg-drag-over"));
+          };
+        } else if (isFolder && relPath) {
+          contentEl.ondragover = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = "move";
+            contentEl.classList.add("wfg-drag-over");
+          };
+          contentEl.ondragleave = (e) => {
+            if (!contentEl.contains(e.relatedTarget)) {
+              contentEl.classList.remove("wfg-drag-over");
+            }
+          };
+          contentEl.ondrop = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            contentEl.classList.remove("wfg-drag-over");
+            if (rootDropZone) rootDropZone.classList.remove("active");
+
+            let data = activeDragData;
+            if (!data) {
+              try {
+                data = JSON.parse(e.dataTransfer.getData("text/plain"));
+              } catch (err) {}
+            }
+            if (data && data.relPath) {
+              await this.moveWorkflow(data.relPath, relPath);
+            }
+          };
+        }
+      });
+    };
+
+    if (rootDropZone) {
+      rootDropZone.ondragover = (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        rootDropZone.classList.add("wfg-drag-over");
+      };
+      rootDropZone.ondragleave = () => {
+        rootDropZone.classList.remove("wfg-drag-over");
+      };
+      rootDropZone.ondrop = async (e) => {
+        e.preventDefault();
+        rootDropZone.classList.remove("wfg-drag-over");
+        rootDropZone.classList.remove("active");
+
+        let data = activeDragData;
+        if (!data) {
+          try {
+            data = JSON.parse(e.dataTransfer.getData("text/plain"));
+          } catch (err) {}
+        }
+        if (data && data.relPath) {
+          await this.moveWorkflow(data.relPath, "");
+        }
+      };
+    }
+
+    panel.addEventListener("pointerdown", () => setTimeout(refreshDraggables, 200));
+    panel.addEventListener("pointerenter", refreshDraggables);
+    setInterval(refreshDraggables, 2500);
   }
 }
 
