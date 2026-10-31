@@ -132,8 +132,6 @@ def register_api_routes(app: web.Application, version_service, config_manager):
     async def create_folder_endpoint(request):
         try:
             wf_dir = config_manager.resolve_workflows_dir()
-            version_service.workflows_dir = wf_dir
-            version_service.storage_dir = wf_dir / ".workflow_versions"
             data = await request.json()
             folder_name = data.get("folder", "").replace("\\", "/").strip("/")
             if not folder_name:
@@ -141,24 +139,7 @@ def register_api_routes(app: web.Application, version_service, config_manager):
 
             target_dir = wf_dir / folder_name
             target_dir.mkdir(parents=True, exist_ok=True)
-
-            # Check if any .json workflows already exist
-            files = [f for f in target_dir.iterdir() if f.is_file() and f.name.endswith(".json")]
-            starter_created = False
-            if not files:
-                starter_file = target_dir / "未命名工作流.json"
-                starter_data = {
-                    "nodes": [],
-                    "links": [],
-                    "extra": {"note": "新文件夹初始工作流"}
-                }
-                with open(starter_file, "w", encoding="utf-8") as f:
-                    json.dump(starter_data, f, indent=2, ensure_ascii=False)
-                rel_file = f"{folder_name}/未命名工作流.json"
-                version_service.save_version(rel_file, json.dumps(starter_data), "新建文件夹初始工作流")
-                starter_created = True
-
-            return web.json_response({"success": True, "folder": folder_name, "starter_created": starter_created})
+            return web.json_response({"success": True, "folder": folder_name})
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
@@ -245,10 +226,12 @@ def register_api_routes(app: web.Application, version_service, config_manager):
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
-    # Middleware to automatically intercept ComfyUI native right-click workflow renames and moves
+    # Middleware to automatically intercept moves, and enrich /userdata with true empty folders
     @web.middleware
-    async def rename_interceptor_middleware(request, handler):
+    async def workflow_interceptor_middleware(request, handler):
         response = await handler(request)
+
+        # 1. Intercept file/folder move operations
         if response.status == 200 and request.method == "POST" and "/userdata/" in request.path and "/move/" in request.path:
             try:
                 src_param = request.match_info.get("file", "")
@@ -269,9 +252,42 @@ def register_api_routes(app: web.Application, version_service, config_manager):
                         version_service.rename_workflow(src_rel, dest_rel)
             except Exception as e:
                 print(f"[WorkflowVersion] Error in rename interceptor: {e}")
+
+        # 2. Enrich GET /userdata with true empty folders (ending with /)
+        if response.status == 200 and request.method == "GET" and request.path == "/userdata" and request.query.get("dir") == "workflows":
+            try:
+                wf_dir = config_manager.resolve_workflows_dir()
+                body_text = response.text
+                items = json.loads(body_text)
+                if isinstance(items, list):
+                    dirs = []
+                    for p in wf_dir.rglob("*"):
+                        if p.is_dir():
+                            rel_parts = p.relative_to(wf_dir).parts
+                            if not any(part.startswith(".") for part in rel_parts):
+                                dirs.append(p.relative_to(wf_dir).as_posix())
+
+                    for d in dirs:
+                        prefix = f"{d}/"
+                        has_files = any(f.get("path", "").startswith(prefix) for f in items if isinstance(f, dict))
+                        if not has_files:
+                            try:
+                                mtime = (wf_dir / d).stat().st_mtime
+                            except Exception:
+                                mtime = 0
+                            items.append({
+                                "path": prefix,
+                                "size": 0,
+                                "modified": mtime,
+                                "created": mtime
+                            })
+                    return web.json_response(items)
+            except Exception as e:
+                print(f"[WorkflowVersion] Error enriching empty folders: {e}")
+
         return response
 
-    if rename_interceptor_middleware not in app.middlewares:
-        app.middlewares.append(rename_interceptor_middleware)
+    if workflow_interceptor_middleware not in app.middlewares:
+        app.middlewares.append(workflow_interceptor_middleware)
 
     app.add_routes(routes)
