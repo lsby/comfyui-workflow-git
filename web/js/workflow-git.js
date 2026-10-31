@@ -54,23 +54,18 @@ class SidebarGitIntegration {
   }
 
   init() {
-    // 1. Listen for user clicks on sidebar navigation icons (safe and lightweight)
+    // Listen for clicks on the left sidebar navigation tabs (clean & efficient, NO setInterval!)
     document.addEventListener("click", (e) => {
       const target = e.target.closest("button, [class*='tab'], [class*='icon'], [class*='nav'], [class*='sidebar']");
       if (target) {
         setTimeout(() => this.safeInject(), 150);
-        setTimeout(() => this.safeInject(), 500);
+        setTimeout(() => this.safeInject(), 600);
       }
     });
 
-    // 2. Gentle interval poll (never loops, strictly protected by isProcessing)
-    setInterval(() => {
-      this.safeInject();
-    }, 2000);
-
-    // Initial inject attempt
-    setTimeout(() => this.safeInject(), 500);
-    setTimeout(() => this.safeInject(), 1500);
+    // Run once on startup
+    setTimeout(() => this.safeInject(), 800);
+    setTimeout(() => this.safeInject(), 2000);
   }
 
   safeInject() {
@@ -86,7 +81,7 @@ class SidebarGitIntegration {
   }
 
   doInject() {
-    // Find workflow search input
+    // 1. Find the search input in Workflows drawer
     const inputs = document.querySelectorAll("input");
     let searchInput = null;
     for (const input of inputs) {
@@ -99,28 +94,33 @@ class SidebarGitIntegration {
 
     if (!searchInput) return;
 
-    // Find the enclosing drawer/panel
+    // Find enclosing drawer panel
     const panel = searchInput.closest("[class*='content'], [class*='panel'], [class*='sidebar']") || searchInput.parentElement?.parentElement;
     if (!panel) return;
 
-    // 1. Inject Quick Commit Bar
+    // 2. Inject Quick Commit Bar
     this.injectQuickCommitBar(searchInput, panel);
 
-    // 2. Inject file badges strictly inside this drawer panel
+    // 3. Inject file badges only into actual workflow list rows
     this.injectFileBadges(panel);
   }
 
   injectQuickCommitBar(searchInput, panel) {
-    if (panel.querySelector("#wfg-sidebar-commit-bar")) {
-      const nameEl = panel.querySelector("#wfg-current-file-name");
-      if (nameEl) nameEl.textContent = getCurrentWorkflowName();
+    let commitBar = panel.querySelector("#wfg-sidebar-commit-bar");
+    const currentName = getCurrentWorkflowName();
+
+    if (commitBar) {
+      const nameEl = commitBar.querySelector("#wfg-current-file-name");
+      if (nameEl && nameEl.textContent !== currentName) {
+        nameEl.textContent = currentName;
+        nameEl.title = currentName;
+      }
       return;
     }
 
-    const commitBar = document.createElement("div");
+    commitBar = document.createElement("div");
     commitBar.id = "wfg-sidebar-commit-bar";
     commitBar.className = "wfg-sidebar-commit-container";
-    const currentName = getCurrentWorkflowName();
 
     commitBar.innerHTML = `
       <div class="wfg-sidebar-commit-header">
@@ -148,6 +148,7 @@ class SidebarGitIntegration {
       </div>
     `;
 
+    // Place right below search box
     const anchor = searchInput.closest(".search-container, .input-container, [class*='search']") || searchInput.parentElement;
     if (anchor && anchor.parentElement) {
       anchor.parentElement.insertBefore(commitBar, anchor.nextSibling);
@@ -186,6 +187,7 @@ class SidebarGitIntegration {
         showToast(`✔ 已提交 [${data.commit_hash || "saved"}]: ${msg}`);
         input.value = "";
 
+        // Refresh badge counts
         this.injectFileBadges(panel, true);
       } catch (e) {
         alert(`Commit 失败: ${e.message}`);
@@ -218,22 +220,44 @@ class SidebarGitIntegration {
   }
 
   injectFileBadges(panel, forceRefresh = false) {
-    // Strictly search within panel, never touch outer body!
-    const candidates = Array.from(panel.querySelectorAll("span, div, a, li, p"));
-    for (const el of candidates) {
-      if (el.children.length > 2) continue;
-      const text = el.textContent ? el.textContent.trim() : "";
-      if (text.endsWith(".json") && text.length < 80 && !text.includes("\n")) {
-        const row = el.closest("[role='treeitem'], li, [class*='node'], [class*='item']") || el.parentElement;
-        if (!row) continue;
-        if (row.querySelector(".wfg-inline-badge")) continue;
+    const commitBar = panel.querySelector("#wfg-sidebar-commit-bar");
 
+    // Clean up any stray badges inside commit bar or input area!
+    if (commitBar) {
+      commitBar.querySelectorAll(".wfg-inline-badge").forEach((b) => b.remove());
+    }
+
+    // Find list rows containing .json (exclude anything inside commitBar)
+    const elements = Array.from(panel.querySelectorAll("span, div, p, a, li")).filter((el) => {
+      if (commitBar && commitBar.contains(el)) return false;
+      if (el.classList.contains("wfg-inline-badge")) return false;
+      if (el.closest("#wfg-sidebar-commit-bar")) return false;
+      if (el.children.length > 1) return false;
+      const text = el.textContent ? el.textContent.trim() : "";
+      return text.endsWith(".json") && text.length < 80 && !text.includes("\n");
+    });
+
+    elements.forEach((textEl) => {
+      const fileName = textEl.textContent.trim();
+      // Locate the true row item (e.g. treeitem, li or direct container)
+      const row = textEl.closest("[role='treeitem'], li, [class*='node-content'], [class*='item']") || textEl.parentElement;
+      if (!row) return;
+
+      // Ensure row NEVER has more than ONE badge
+      const existingBadges = row.querySelectorAll(".wfg-inline-badge");
+      if (existingBadges.length > 1) {
+        // Keep only first, remove duplicates
+        for (let i = 1; i < existingBadges.length; i++) existingBadges[i].remove();
+      }
+      if (existingBadges.length === 1 && !forceRefresh) return;
+
+      if (existingBadges.length === 0) {
         const badge = document.createElement("span");
         badge.className = "wfg-inline-badge";
         badge.innerHTML = `🌱 Git`;
-        badge.title = `点击查看 [${text}] 的历史版本`;
+        badge.title = `点击查看 [${fileName}] 的历史版本`;
 
-        fetch(`/workflow-git/history?file=${encodeURIComponent(text)}&limit=10`)
+        fetch(`/workflow-git/history?file=${encodeURIComponent(fileName)}&limit=10`)
           .then((r) => r.json())
           .then((data) => {
             if (data.success && data.history.length > 0) {
@@ -245,12 +269,24 @@ class SidebarGitIntegration {
         badge.onclick = (e) => {
           e.stopPropagation();
           e.preventDefault();
-          this.toggleFileHistory(row, text, badge);
+          this.toggleFileHistory(row, fileName, badge);
         };
+
+        // Format row neatly: single line, no line break
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.justifyContent = "space-between";
+        row.style.flexWrap = "nowrap";
+
+        // Keep text from breaking mid-word
+        textEl.style.whiteSpace = "nowrap";
+        textEl.style.overflow = "hidden";
+        textEl.style.textOverflow = "ellipsis";
+        textEl.style.maxWidth = "170px";
 
         row.appendChild(badge);
       }
-    }
+    });
   }
 
   async toggleFileHistory(row, fileName, badge) {
@@ -347,6 +383,6 @@ app.registerExtension({
       }
     });
 
-    console.log("[WorkflowGit] Sidebar Git Integration loaded safely without any observer loops!");
+    console.log("[WorkflowGit] Sidebar Git Integration initialized cleanly!");
   }
 });

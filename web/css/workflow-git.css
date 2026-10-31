@@ -2,14 +2,15 @@
 
 /* Quick Commit Bar inside Sidebar */
 .wfg-sidebar-commit-container {
-  margin: 10px 12px 14px 12px;
-  background: #1e1e22;
-  border: 1px solid #2d2d32;
+  margin: 10px 10px 14px 10px;
+  background: #1e1e24;
+  border: 1px solid #2d2d38;
   border-radius: 8px;
   padding: 10px;
   font-family: inherit;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
   transition: border-color 0.2s;
+  box-sizing: border-box;
 }
 
 .wfg-sidebar-commit-container:focus-within {
@@ -28,7 +29,7 @@
 .wfg-sidebar-current-file {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   font-weight: 600;
   color: #38bdf8;
   max-width: 170px;
@@ -56,10 +57,11 @@
   background: #27272a;
   border: 1px solid #3f3f46;
   border-radius: 5px;
-  padding: 5px 8px;
+  padding: 6px 8px;
   font-size: 12px;
   color: #fafafa;
   outline: none;
+  min-width: 0;
   transition: border-color 0.15s;
 }
 
@@ -77,7 +79,7 @@
   color: #ffffff;
   border: none;
   border-radius: 5px;
-  padding: 5px 10px;
+  padding: 6px 12px;
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
@@ -86,6 +88,7 @@
   gap: 4px;
   transition: background 0.15s;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .wfg-sidebar-commit-btn:hover {
@@ -102,23 +105,25 @@
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  background: rgba(56, 189, 248, 0.12);
+  background: rgba(56, 189, 248, 0.15);
   color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.25);
-  border-radius: 10px;
-  padding: 1px 6px;
-  font-size: 10px;
-  font-weight: 500;
-  margin-left: auto;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 12px;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 600;
   cursor: pointer;
   transition: all 0.15s;
   user-select: none;
+  flex-shrink: 0;
+  margin-left: 8px;
 }
 
 .wfg-inline-badge:hover {
-  background: rgba(56, 189, 248, 0.25);
+  background: #0284c7;
+  color: #ffffff;
   border-color: #38bdf8;
-  transform: scale(1.04);
+  transform: scale(1.05);
 }
 
 .wfg-inline-badge.expanded {
@@ -129,9 +134,9 @@
 
 /* Inline History Accordion / Tree */
 .wfg-inline-history-tree {
-  margin: 4px 0 10px 18px;
-  border-left: 2px solid #334155;
-  padding-left: 10px;
+  margin: 6px 0 10px 14px;
+  border-left: 2px solid #38bdf8;
+  padding-left: 8px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -158,6 +163,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 6px;
   transition: all 0.15s;
 }
 
@@ -171,6 +177,7 @@
   flex-direction: column;
   gap: 2px;
   overflow: hidden;
+  flex: 1;
 }
 
 .wfg-history-node-msg {
@@ -179,7 +186,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 150px;
+  max-width: 140px;
 }
 
 .wfg-history-node-meta {
@@ -200,12 +207,13 @@
   color: #e2e8f0;
   border: 1px solid #475569;
   border-radius: 4px;
-  padding: 2px 7px;
+  padding: 3px 8px;
   font-size: 10px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.15s;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .wfg-history-restore-btn:hover {
@@ -236,26 +244,4 @@
 .workflow-git-toast.active {
   transform: translateY(0);
   opacity: 1;
-}
-
-/* Floating button (now subtle) */
-.workflow-git-float-btn {
-  position: fixed;
-  bottom: 80px;
-  right: 24px;
-  background: rgba(2, 132, 199, 0.85);
-  backdrop-filter: blur(4px);
-  color: #ffffff;
-  padding: 6px 12px;
-  border-radius: 16px;
-  font-size: 12px;
-  font-weight: 600;
-  display: none; /* Hidden by default, can be toggled */
-  align-items: center;
-  gap: 5px;
-  box-shadow: 0 4px 15px rgba(2, 132, 199, 0.3);
-  cursor: grab;
-  z-index: 9999;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  user-select: none;
 }
