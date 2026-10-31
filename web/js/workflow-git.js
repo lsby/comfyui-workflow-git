@@ -119,7 +119,7 @@ class SidebarVersionIntegration {
     this.lastCleanFingerprint = "";
     this.isDirty = false;
     this.currentPage = 1;
-    this.pageSize = 4;
+    this.pageSize = 5;
     this.allHistoryItems = [];
     this.init();
   }
