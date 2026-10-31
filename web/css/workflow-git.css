@@ -29,7 +29,7 @@
   gap: 5px;
   font-weight: 600;
   color: #38bdf8;
-  max-width: 140px;
+  max-width: 130px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -38,16 +38,47 @@
 .wfg-sidebar-header-right {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
 }
 
-.wfg-sidebar-branch-tag {
+.wfg-version-badge {
   background: #27272a;
-  color: #94a3b8;
+  color: #38bdf8;
   padding: 1px 5px;
   border-radius: 4px;
   font-size: 10px;
+  font-family: monospace;
   border: 1px solid #3f3f46;
+}
+
+.wfg-dirty-pill {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  transition: all 0.2s ease;
+}
+
+.wfg-dirty-pill.clean {
+  background: rgba(34, 197, 94, 0.12);
+  color: #4ade80;
+  border: 1px solid rgba(74, 222, 128, 0.25);
+}
+
+.wfg-dirty-pill.dirty {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.25);
+  animation: wfg-pulse 2s infinite ease-in-out;
+}
+
+@keyframes wfg-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
 }
 
 .wfg-sidebar-history-toggle-btn {
@@ -106,7 +137,7 @@
 .wfg-sidebar-commit-btn {
   background: #0284c7;
   color: #ffffff;
-  border: none;
+  border: 1px solid transparent;
   border-radius: 5px;
   padding: 6px 12px;
   font-size: 11px;
@@ -115,13 +146,19 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  transition: background 0.15s;
+  transition: all 0.15s;
   white-space: nowrap;
   flex-shrink: 0;
 }
 
 .wfg-sidebar-commit-btn:hover {
   background: #0369a1;
+}
+
+.wfg-sidebar-commit-btn.has-changes {
+  background: #0284c7;
+  border-color: #38bdf8;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.4);
 }
 
 .wfg-sidebar-commit-btn:disabled {
@@ -169,6 +206,11 @@
   border-color: #38bdf8;
 }
 
+.wfg-history-node.is-active {
+  border-color: #38bdf8;
+  background: rgba(2, 132, 199, 0.12);
+}
+
 .wfg-history-node-left {
   display: flex;
   flex-direction: column;
@@ -198,6 +240,15 @@
   font-family: monospace;
 }
 
+.wfg-active-tag {
+  background: #0284c7;
+  color: #ffffff;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 600;
+}
+
 .wfg-history-node-actions {
   display: flex;
   align-items: center;
@@ -222,6 +273,12 @@
   background: #0284c7;
   color: #ffffff;
   border-color: #38bdf8;
+}
+
+.wfg-history-restore-btn.current {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.4);
 }
 
 .wfg-history-delete-btn {

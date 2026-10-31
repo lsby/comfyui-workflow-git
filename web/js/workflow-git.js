@@ -89,6 +89,10 @@ class SidebarVersionIntegration {
   constructor() {
     this.isProcessing = false;
     this.isHistoryExpanded = false;
+    this.currentWorkflowName = "";
+    this.activeVersionHash = "";
+    this.lastCleanSerialized = "";
+    this.isDirty = false;
     this.init();
   }
 
@@ -105,6 +109,63 @@ class SidebarVersionIntegration {
     // Check on startup
     setTimeout(() => this.safeInject(), 800);
     setTimeout(() => this.safeInject(), 2000);
+
+    // Periodically check for modifications / dirty state every 800ms
+    setInterval(() => {
+      this.checkDirtyState();
+    }, 800);
+  }
+
+  checkDirtyState() {
+    if (!app.graph) return;
+    try {
+      const currentSerialized = JSON.stringify(app.graph.serialize());
+      if (!this.lastCleanSerialized) {
+        this.lastCleanSerialized = currentSerialized;
+        this.isDirty = false;
+        this.updateDirtyIndicator();
+        return;
+      }
+
+      const dirty = currentSerialized !== this.lastCleanSerialized;
+      if (dirty !== this.isDirty) {
+        this.isDirty = dirty;
+        this.updateDirtyIndicator();
+      }
+    } catch (e) {}
+  }
+
+  updateDirtyIndicator() {
+    const badgeEl = document.querySelector("#wfg-version-badge");
+    const dirtyEl = document.querySelector("#wfg-dirty-pill");
+    const commitBtn = document.querySelector("#wfg-quick-commit-btn");
+
+    if (badgeEl) {
+      badgeEl.textContent = this.activeVersionHash ? `#${this.activeVersionHash}` : "无快照";
+      badgeEl.title = this.activeVersionHash ? `当前基底版本: #${this.activeVersionHash}` : "当前尚未保存快照";
+    }
+
+    if (dirtyEl) {
+      if (this.isDirty) {
+        dirtyEl.className = "wfg-dirty-pill dirty";
+        dirtyEl.innerHTML = `● 已修改`;
+        dirtyEl.title = "当前画布与最新快照不一致，建议保存新版本";
+      } else {
+        dirtyEl.className = "wfg-dirty-pill clean";
+        dirtyEl.innerHTML = `✔ 干净`;
+        dirtyEl.title = "当前画布与该快照版本完全一致";
+      }
+    }
+
+    if (commitBtn) {
+      if (this.isDirty) {
+        commitBtn.classList.add("has-changes");
+        commitBtn.textContent = "✔ 保存修改";
+      } else {
+        commitBtn.classList.remove("has-changes");
+        commitBtn.textContent = "✔ 保存";
+      }
+    }
   }
 
   safeInject() {
@@ -138,8 +199,26 @@ class SidebarVersionIntegration {
     if (!panel) return;
 
     // 2. Inject Quick Commit & History Bar strictly into its own container
-    // NEVER touch PrimeVue tree or file list DOM below!
     this.injectQuickCommitBar(searchInput, panel);
+  }
+
+  async syncActiveWorkflowMetadata(fileName) {
+    this.currentWorkflowName = fileName;
+    try {
+      const res = await fetch(`/workflow-git/history?file=${encodeURIComponent(fileName)}&limit=1`);
+      const data = await res.json();
+      if (data.success && data.history && data.history.length > 0) {
+        this.activeVersionHash = data.history[0].short_hash;
+      } else {
+        this.activeVersionHash = "";
+      }
+    } catch (e) {}
+
+    if (app.graph) {
+      this.lastCleanSerialized = JSON.stringify(app.graph.serialize());
+    }
+    this.isDirty = false;
+    this.updateDirtyIndicator();
   }
 
   injectQuickCommitBar(searchInput, panel) {
@@ -151,7 +230,7 @@ class SidebarVersionIntegration {
       if (nameEl && nameEl.textContent !== currentName) {
         nameEl.textContent = currentName;
         nameEl.title = currentName;
-        // If history is open, refresh for new active file
+        this.syncActiveWorkflowMetadata(currentName);
         if (this.isHistoryExpanded) {
           this.loadHistoryList(commitBar, currentName);
         }
@@ -175,7 +254,8 @@ class SidebarVersionIntegration {
           <span id="wfg-current-file-name" title="${currentName}">${currentName}</span>
         </div>
         <div class="wfg-sidebar-header-right">
-          <span class="wfg-sidebar-branch-tag" id="wfg-branch-tag">快照版本</span>
+          <span class="wfg-version-badge" id="wfg-version-badge">版本</span>
+          <span class="wfg-dirty-pill clean" id="wfg-dirty-pill">✔ 干净</span>
           <button id="wfg-history-toggle-btn" class="wfg-sidebar-history-toggle-btn" title="查看该工作流历史版本">
             📜 历史 <span id="wfg-history-arrow">▾</span>
           </button>
@@ -209,6 +289,9 @@ class SidebarVersionIntegration {
     const commitBtn = commitBar.querySelector("#wfg-quick-commit-btn");
     const historyBtn = commitBar.querySelector("#wfg-history-toggle-btn");
     const historyPanel = commitBar.querySelector("#wfg-sidebar-history-panel");
+
+    // Initialize version metadata for current file
+    this.syncActiveWorkflowMetadata(currentName);
 
     // Toggle history view
     historyBtn.onclick = () => {
@@ -251,7 +334,12 @@ class SidebarVersionIntegration {
         const data = await res.json();
         if (!data.success) throw new Error(data.error);
 
-        showToast(`✔ 已保存版本 [${data.commit_hash}]: ${msg}`);
+        this.activeVersionHash = data.commit_hash;
+        this.lastCleanSerialized = JSON.stringify(workflowData);
+        this.isDirty = false;
+        this.updateDirtyIndicator();
+
+        showToast(`✔ 已保存版本 [#${data.commit_hash}]: ${msg}`);
         input.value = "";
 
         // If history is open, refresh it immediately
@@ -262,7 +350,7 @@ class SidebarVersionIntegration {
         alert(`保存版本失败: ${e.message}`);
       } finally {
         commitBtn.disabled = false;
-        commitBtn.textContent = "✔ 保存";
+        this.updateDirtyIndicator();
       }
     };
 
@@ -292,19 +380,21 @@ class SidebarVersionIntegration {
 
       historyPanel.innerHTML = "";
       data.history.forEach((commit) => {
+        const isCurrentActive = commit.short_hash === this.activeVersionHash;
         const node = document.createElement("div");
-        node.className = "wfg-history-node";
+        node.className = `wfg-history-node ${isCurrentActive ? "is-active" : ""}`;
         node.innerHTML = `
           <div class="wfg-history-node-left">
             <div class="wfg-history-node-msg" title="${commit.message}">${commit.message}</div>
             <div class="wfg-history-node-meta">
               <span class="wfg-history-node-hash">#${commit.short_hash}</span>
+              ${isCurrentActive ? `<span class="wfg-active-tag">当前基底</span>` : ""}
               <span>${commit.date ? commit.date.split(" ")[0] : ""}</span>
             </div>
           </div>
           <div class="wfg-history-node-actions">
-            <button class="wfg-history-restore-btn" title="将此版本载入当前画布">
-              载入
+            <button class="wfg-history-restore-btn ${isCurrentActive && !this.isDirty ? "current" : ""}" title="将此版本载入当前画布">
+              ${isCurrentActive ? (this.isDirty ? "还原" : "当前") : "载入"}
             </button>
             <button class="wfg-history-delete-btn" title="删除此历史版本">
               🗑️
@@ -315,6 +405,11 @@ class SidebarVersionIntegration {
         // Restore button: loads graph into CURRENT workflow without opening Unsaved tab
         node.querySelector(".wfg-history-restore-btn").onclick = async (e) => {
           e.stopPropagation();
+          if (isCurrentActive && !this.isDirty) {
+            showToast(`当前画布已经是该版本 (#${commit.short_hash})`);
+            return;
+          }
+
           if (!confirm(`确定要将 [${fileName}] 恢复到版本 #${commit.short_hash} ("${commit.message}") 吗？当前画布改动将被覆盖。`)) {
             return;
           }
@@ -325,18 +420,23 @@ class SidebarVersionIntegration {
             if (!checkoutData.success) throw new Error(checkoutData.error);
 
             if (checkoutData.workflow) {
-              // Pass fileName as 4th parameter so ComfyUI reuses active workflow tab!
               try {
                 await app.loadGraphData(checkoutData.workflow, true, true, fileName);
               } catch (loadErr) {
-                // Fallback direct configure
                 if (app.graph && typeof app.graph.configure === "function") {
                   app.graph.configure(checkoutData.workflow);
                 } else {
                   app.loadGraphData(checkoutData.workflow);
                 }
               }
+
+              this.activeVersionHash = commit.short_hash;
+              this.lastCleanSerialized = JSON.stringify(checkoutData.workflow);
+              this.isDirty = false;
+              this.updateDirtyIndicator();
+
               showToast(`✔ 已载入 [${fileName}] 版本 (#${commit.short_hash})`);
+              this.loadHistoryList(commitBar, fileName);
             }
           } catch (err) {
             alert(`载入失败: ${err.message}`);
@@ -363,7 +463,10 @@ class SidebarVersionIntegration {
             if (!delData.success) throw new Error(delData.error || "删除失败");
 
             showToast(`🗑️ 已删除版本 #${commit.short_hash}`);
-            // Refresh history list
+            if (this.activeVersionHash === commit.short_hash) {
+              this.activeVersionHash = "";
+              this.updateDirtyIndicator();
+            }
             this.loadHistoryList(commitBar, fileName);
           } catch (err) {
             alert(`删除失败: ${err.message}`);
