@@ -105,7 +105,7 @@ class WorkflowGitUI {
           <!-- Settings Tab -->
           <div class="workflow-git-panel" id="wfg-panel-settings">
             <div class="workflow-git-field">
-              <label class="workflow-git-label">Workflows Directory Path (Supports relative paths like ../../工作流)</label>
+              <label class="workflow-git-label">Workflows Directory Path (Supports relative paths like ../../../../../工作流)</label>
               <input type="text" id="wfg-config-dir" class="workflow-git-input" />
               <div style="font-size: 11px; color: #71717a; margin-top: 4px;" id="wfg-resolved-path"></div>
             </div>
@@ -171,8 +171,42 @@ class WorkflowGitUI {
     });
   }
 
+  detectCurrentWorkflowName() {
+    // Try to auto-detect current workflow name from ComfyUI
+    try {
+      // Modern TopBar workflow tab or title
+      const tabEl = document.querySelector(".comfyui-workflow-tab.active, [data-testid='workflow-tab-active']");
+      if (tabEl && tabEl.textContent.trim()) {
+        let name = tabEl.textContent.trim().replace(/^\*/, "").trim();
+        if (name) return name.endsWith(".json") ? name : `${name}.json`;
+      }
+
+      // Check title bar in header
+      const titleEl = document.querySelector(".comfy-topbar-title, .comfyui-workflow-name");
+      if (titleEl && titleEl.textContent.trim()) {
+        let name = titleEl.textContent.trim().replace(/^\*/, "").trim();
+        if (name) return name.endsWith(".json") ? name : `${name}.json`;
+      }
+
+      // Check app workflow manager
+      if (app.workflowManager?.activeWorkflow?.name) {
+        let name = app.workflowManager.activeWorkflow.name.replace(/^\*/, "").trim();
+        if (name) return name.endsWith(".json") ? name : `${name}.json`;
+      }
+    } catch (e) {
+      // Fallback
+    }
+    return "workflow.json";
+  }
+
   async show() {
     this.overlay.classList.add("active");
+    // Auto populate detected workflow name
+    const detectedName = this.detectCurrentWorkflowName();
+    const fileNameInput = this.overlay.querySelector("#wfg-filename");
+    if (fileNameInput && (!fileNameInput.value || fileNameInput.value === "workflow.json")) {
+      fileNameInput.value = detectedName;
+    }
     await this.refreshStatus();
   }
 
@@ -385,28 +419,102 @@ app.registerExtension({
     injectCSS();
     const gitUI = new WorkflowGitUI();
 
-    // 1. Add menu button to ComfyUI menu bar
-    const addMenuButton = () => {
-      const menu = document.querySelector(".comfy-menu") || app.ui.menuContainer;
-      if (menu && !document.querySelector("#wfg-menu-btn")) {
+    // 1. Modern TopBar Integration (v1.x)
+    const injectTopBarButton = async () => {
+      if (document.querySelector("#wfg-menu-btn")) return true;
+
+      try {
+        const buttonMod = await import("../../scripts/ui/components/button.js");
+        const ComfyButton = buttonMod.ComfyButton;
+        if (ComfyButton) {
+          const btn = new ComfyButton({
+            action: () => gitUI.show(),
+            tooltip: "Workflow Git Version Control (Alt + G)",
+            content: "🌱 Git",
+            classList: "comfyui-button comfyui-menu-mobile-collapse primary"
+          });
+          btn.element.id = "wfg-menu-btn";
+
+          if (app.menu?.settingsGroup?.element) {
+            app.menu.settingsGroup.element.before(btn.element);
+            return true;
+          } else if (app.menu?.element) {
+            app.menu.element.appendChild(btn.element);
+            return true;
+          }
+        }
+      } catch (e) {
+        // Fallback to DOM injection
+      }
+
+      // Try searching for Manager button in TopBar
+      const managerBtn = Array.from(document.querySelectorAll("button")).find(
+        (b) => b.textContent && b.textContent.includes("Manager")
+      );
+      if (managerBtn && managerBtn.parentElement) {
         const btn = document.createElement("button");
         btn.id = "wfg-menu-btn";
-        btn.textContent = "Git Commit";
+        btn.className = "comfyui-button primary";
+        btn.innerHTML = `<span style="margin-right: 4px;">🌱</span>Git`;
         btn.title = "Workflow Git Version Control (Alt + G)";
         btn.style.background = "#0284c7";
         btn.style.color = "#ffffff";
         btn.style.fontWeight = "bold";
+        btn.style.margin = "0 4px";
+        btn.onclick = () => gitUI.show();
+        managerBtn.parentElement.insertBefore(btn, managerBtn);
+        return true;
+      }
+
+      // Fallback for classic .comfy-menu
+      const menu = document.querySelector(".comfy-menu") || app.ui?.menuContainer;
+      if (menu) {
+        const btn = document.createElement("button");
+        btn.id = "wfg-menu-btn";
+        btn.textContent = "Git Commit";
+        btn.title = "Workflow Git (Alt + G)";
+        btn.style.background = "#0284c7";
+        btn.style.color = "#ffffff";
         btn.onclick = () => gitUI.show();
         menu.appendChild(btn);
+        return true;
       }
+
+      return false;
     };
 
-    // Try adding button
-    addMenuButton();
-    setTimeout(addMenuButton, 1000);
-    setTimeout(addMenuButton, 3000);
+    // 2. Always create a floating action button on screen edge (Triple insurance!)
+    const injectFloatingButton = () => {
+      if (document.querySelector("#wfg-float-btn")) return;
+      const floatBtn = document.createElement("div");
+      floatBtn.id = "wfg-float-btn";
+      floatBtn.className = "workflow-git-float-btn";
+      floatBtn.innerHTML = `
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <circle cx="18" cy="18" r="3"></circle>
+          <circle cx="6" cy="6" r="3"></circle>
+          <path d="M13 6h3a2 2 0 0 1 2 2v7"></path>
+          <line x1="6" y1="9" x2="6" y2="21"></line>
+        </svg>
+        <span>Git (Alt+G)</span>
+      `;
+      floatBtn.title = "Open Workflow Git Version Control (Alt + G)";
+      floatBtn.onclick = () => gitUI.show();
+      document.body.appendChild(floatBtn);
+    };
 
-    // 2. Global shortcut Alt + G
+    // Periodic attempts to inject buttons as DOM stabilizes
+    const tryInject = async () => {
+      await injectTopBarButton();
+      injectFloatingButton();
+    };
+
+    tryInject();
+    setTimeout(tryInject, 500);
+    setTimeout(tryInject, 1500);
+    setTimeout(tryInject, 3000);
+
+    // 3. Global shortcut Alt + G
     window.addEventListener("keydown", (e) => {
       if (e.altKey && (e.key === "g" || e.key === "G")) {
         e.preventDefault();
@@ -414,6 +522,6 @@ app.registerExtension({
       }
     });
 
-    console.log("[WorkflowGit] Extension loaded successfully! Use Alt + G or click 'Git Commit' button.");
+    console.log("[WorkflowGit] Extension loaded successfully! Use Alt + G or click '🌱 Git' button.");
   }
 });

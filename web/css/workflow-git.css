@@ -313,3 +313,31 @@
   transform: translateY(0);
   opacity: 1;
 }
+
+/* Floating Quick Button */
+.workflow-git-float-btn {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: #0284c7;
+  color: #ffffff;
+  padding: 8px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 4px 15px rgba(2, 132, 199, 0.4);
+  cursor: pointer;
+  z-index: 9999;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.workflow-git-float-btn:hover {
+  background: #0369a1;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(2, 132, 199, 0.6);
+}
