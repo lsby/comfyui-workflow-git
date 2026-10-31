@@ -49,12 +49,12 @@ function getCurrentWorkflowName() {
 class SidebarGitIntegration {
   constructor() {
     this.isProcessing = false;
-    this.expandedFiles = new Set();
+    this.isHistoryExpanded = false;
     this.init();
   }
 
   init() {
-    // Listen for clicks on the left sidebar navigation tabs (clean & efficient, NO setInterval!)
+    // Listen for clicks on the left sidebar navigation tabs
     document.addEventListener("click", (e) => {
       const target = e.target.closest("button, [class*='tab'], [class*='icon'], [class*='nav'], [class*='sidebar']");
       if (target) {
@@ -63,7 +63,7 @@ class SidebarGitIntegration {
       }
     });
 
-    // Run once on startup
+    // Check on startup
     setTimeout(() => this.safeInject(), 800);
     setTimeout(() => this.safeInject(), 2000);
   }
@@ -98,11 +98,9 @@ class SidebarGitIntegration {
     const panel = searchInput.closest("[class*='content'], [class*='panel'], [class*='sidebar']") || searchInput.parentElement?.parentElement;
     if (!panel) return;
 
-    // 2. Inject Quick Commit Bar
+    // 2. Inject Quick Commit & History Bar strictly into its own container
+    // NEVER touch PrimeVue tree or file list DOM below!
     this.injectQuickCommitBar(searchInput, panel);
-
-    // 3. Inject file badges only into actual workflow list rows
-    this.injectFileBadges(panel);
   }
 
   injectQuickCommitBar(searchInput, panel) {
@@ -114,6 +112,10 @@ class SidebarGitIntegration {
       if (nameEl && nameEl.textContent !== currentName) {
         nameEl.textContent = currentName;
         nameEl.title = currentName;
+        // If history is open, refresh for new file
+        if (this.isHistoryExpanded) {
+          this.loadHistoryList(commitBar, currentName);
+        }
       }
       return;
     }
@@ -124,7 +126,7 @@ class SidebarGitIntegration {
 
     commitBar.innerHTML = `
       <div class="wfg-sidebar-commit-header">
-        <div class="wfg-sidebar-current-file">
+        <div class="wfg-sidebar-file-badge">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <circle cx="18" cy="18" r="3"></circle>
             <circle cx="6" cy="6" r="3"></circle>
@@ -133,18 +135,26 @@ class SidebarGitIntegration {
           </svg>
           <span id="wfg-current-file-name" title="${currentName}">${currentName}</span>
         </div>
-        <span class="wfg-sidebar-branch-tag" id="wfg-branch-tag">Git</span>
+        <div class="wfg-sidebar-header-right">
+          <span class="wfg-sidebar-branch-tag" id="wfg-branch-tag">Git</span>
+          <button id="wfg-history-toggle-btn" class="wfg-sidebar-history-toggle-btn" title="查看该工作流提交历史">
+            📜 历史 <span id="wfg-history-arrow">▾</span>
+          </button>
+        </div>
       </div>
       <div class="wfg-sidebar-input-row">
         <input
           type="text"
           id="wfg-quick-msg"
           class="wfg-sidebar-commit-input"
-          placeholder="提交这次修改说明 (Enter 提交)..."
+          placeholder="提交说明 (Enter 提交)..."
         />
-        <button id="wfg-quick-commit-btn" class="wfg-sidebar-commit-btn" title="Commit current workflow">
+        <button id="wfg-quick-commit-btn" class="wfg-sidebar-commit-btn" title="Commit 当前工作流">
           ✔ Commit
         </button>
+      </div>
+      <div id="wfg-sidebar-history-panel" class="wfg-sidebar-history-panel">
+        <div style="font-size: 11px; color: #64748b; padding: 4px; text-align: center;">点击展开历史版本</div>
       </div>
     `;
 
@@ -157,8 +167,26 @@ class SidebarGitIntegration {
     }
 
     const input = commitBar.querySelector("#wfg-quick-msg");
-    const btn = commitBar.querySelector("#wfg-quick-commit-btn");
+    const commitBtn = commitBar.querySelector("#wfg-quick-commit-btn");
+    const historyBtn = commitBar.querySelector("#wfg-history-toggle-btn");
+    const historyPanel = commitBar.querySelector("#wfg-sidebar-history-panel");
 
+    // Toggle history view
+    historyBtn.onclick = () => {
+      this.isHistoryExpanded = !this.isHistoryExpanded;
+      if (this.isHistoryExpanded) {
+        historyBtn.classList.add("active");
+        historyPanel.classList.add("expanded");
+        commitBar.querySelector("#wfg-history-arrow").textContent = "▴";
+        this.loadHistoryList(commitBar, getCurrentWorkflowName());
+      } else {
+        historyBtn.classList.remove("active");
+        historyPanel.classList.remove("expanded");
+        commitBar.querySelector("#wfg-history-arrow").textContent = "▾";
+      }
+    };
+
+    // Commit logic
     const doCommit = async () => {
       const msg = input.value.trim();
       if (!msg) {
@@ -167,8 +195,8 @@ class SidebarGitIntegration {
       }
       const fileName = getCurrentWorkflowName();
       try {
-        btn.disabled = true;
-        btn.textContent = "Committing...";
+        commitBtn.disabled = true;
+        commitBtn.textContent = "Committing...";
 
         const workflowData = app.graph.serialize();
         const res = await fetch("/workflow-git/commit", {
@@ -187,17 +215,19 @@ class SidebarGitIntegration {
         showToast(`✔ 已提交 [${data.commit_hash || "saved"}]: ${msg}`);
         input.value = "";
 
-        // Refresh badge counts
-        this.injectFileBadges(panel, true);
+        // If history is currently expanded, refresh history list
+        if (this.isHistoryExpanded) {
+          this.loadHistoryList(commitBar, fileName);
+        }
       } catch (e) {
         alert(`Commit 失败: ${e.message}`);
       } finally {
-        btn.disabled = false;
-        btn.textContent = "✔ Commit";
+        commitBtn.disabled = false;
+        commitBtn.textContent = "✔ Commit";
       }
     };
 
-    btn.onclick = doCommit;
+    commitBtn.onclick = doCommit;
     input.onkeydown = (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -208,114 +238,22 @@ class SidebarGitIntegration {
     this.updateBranchTag();
   }
 
-  async updateBranchTag() {
-    try {
-      const res = await fetch("/workflow-git/status");
-      const data = await res.json();
-      if (data.success && data.status?.branch) {
-        const tag = document.querySelector("#wfg-branch-tag");
-        if (tag) tag.textContent = data.status.branch;
-      }
-    } catch (e) {}
-  }
+  async loadHistoryList(commitBar, fileName) {
+    const historyPanel = commitBar.querySelector("#wfg-sidebar-history-panel");
+    if (!historyPanel) return;
 
-  injectFileBadges(panel, forceRefresh = false) {
-    const commitBar = panel.querySelector("#wfg-sidebar-commit-bar");
-
-    // Clean up any stray badges inside commit bar or input area!
-    if (commitBar) {
-      commitBar.querySelectorAll(".wfg-inline-badge").forEach((b) => b.remove());
-    }
-
-    // Find list rows containing .json (exclude anything inside commitBar)
-    const elements = Array.from(panel.querySelectorAll("span, div, p, a, li")).filter((el) => {
-      if (commitBar && commitBar.contains(el)) return false;
-      if (el.classList.contains("wfg-inline-badge")) return false;
-      if (el.closest("#wfg-sidebar-commit-bar")) return false;
-      if (el.children.length > 1) return false;
-      const text = el.textContent ? el.textContent.trim() : "";
-      return text.endsWith(".json") && text.length < 80 && !text.includes("\n");
-    });
-
-    elements.forEach((textEl) => {
-      const fileName = textEl.textContent.trim();
-      // Locate the true row item (e.g. treeitem, li or direct container)
-      const row = textEl.closest("[role='treeitem'], li, [class*='node-content'], [class*='item']") || textEl.parentElement;
-      if (!row) return;
-
-      // Ensure row NEVER has more than ONE badge
-      const existingBadges = row.querySelectorAll(".wfg-inline-badge");
-      if (existingBadges.length > 1) {
-        // Keep only first, remove duplicates
-        for (let i = 1; i < existingBadges.length; i++) existingBadges[i].remove();
-      }
-      if (existingBadges.length === 1 && !forceRefresh) return;
-
-      if (existingBadges.length === 0) {
-        const badge = document.createElement("span");
-        badge.className = "wfg-inline-badge";
-        badge.innerHTML = `🌱 Git`;
-        badge.title = `点击查看 [${fileName}] 的历史版本`;
-
-        fetch(`/workflow-git/history?file=${encodeURIComponent(fileName)}&limit=10`)
-          .then((r) => r.json())
-          .then((data) => {
-            if (data.success && data.history.length > 0) {
-              badge.innerHTML = `🌱 ${data.history.length}`;
-            }
-          })
-          .catch(() => {});
-
-        badge.onclick = (e) => {
-          e.stopPropagation();
-          e.preventDefault();
-          this.toggleFileHistory(row, fileName, badge);
-        };
-
-        // Format row neatly: single line, no line break
-        row.style.display = "flex";
-        row.style.alignItems = "center";
-        row.style.justifyContent = "space-between";
-        row.style.flexWrap = "nowrap";
-
-        // Keep text from breaking mid-word
-        textEl.style.whiteSpace = "nowrap";
-        textEl.style.overflow = "hidden";
-        textEl.style.textOverflow = "ellipsis";
-        textEl.style.maxWidth = "170px";
-
-        row.appendChild(badge);
-      }
-    });
-  }
-
-  async toggleFileHistory(row, fileName, badge) {
-    const nextEl = row.nextElementSibling;
-    if (nextEl && nextEl.classList.contains("wfg-inline-history-tree")) {
-      nextEl.remove();
-      badge.classList.remove("expanded");
-      this.expandedFiles.delete(fileName);
-      return;
-    }
-
-    badge.classList.add("expanded");
-    this.expandedFiles.add(fileName);
-
-    const treeContainer = document.createElement("div");
-    treeContainer.className = "wfg-inline-history-tree";
-    treeContainer.innerHTML = `<div style="font-size: 10px; color: #64748b; padding: 4px;">正在读取历史版本...</div>`;
-    row.parentElement.insertBefore(treeContainer, row.nextSibling);
+    historyPanel.innerHTML = `<div style="font-size: 11px; color: #64748b; padding: 6px; text-align: center;">正在读取历史版本...</div>`;
 
     try {
       const res = await fetch(`/workflow-git/history?file=${encodeURIComponent(fileName)}&limit=30`);
       const data = await res.json();
 
       if (!data.success || !data.history.length) {
-        treeContainer.innerHTML = `<div style="font-size: 10px; color: #64748b; padding: 4px;">暂无提交历史</div>`;
+        historyPanel.innerHTML = `<div style="font-size: 11px; color: #64748b; padding: 6px; text-align: center;">[${fileName}] 暂无提交历史</div>`;
         return;
       }
 
-      treeContainer.innerHTML = "";
+      historyPanel.innerHTML = "";
       data.history.forEach((commit) => {
         const node = document.createElement("div");
         node.className = "wfg-history-node";
@@ -352,11 +290,22 @@ class SidebarGitIntegration {
           }
         };
 
-        treeContainer.appendChild(node);
+        historyPanel.appendChild(node);
       });
     } catch (e) {
-      treeContainer.innerHTML = `<div style="font-size: 10px; color: #ef4444; padding: 4px;">读取失败: ${e.message}</div>`;
+      historyPanel.innerHTML = `<div style="font-size: 11px; color: #ef4444; padding: 6px; text-align: center;">读取失败: ${e.message}</div>`;
     }
+  }
+
+  async updateBranchTag() {
+    try {
+      const res = await fetch("/workflow-git/status");
+      const data = await res.json();
+      if (data.success && data.status?.branch) {
+        const tag = document.querySelector("#wfg-branch-tag");
+        if (tag) tag.textContent = data.status.branch;
+      }
+    } catch (e) {}
   }
 }
 

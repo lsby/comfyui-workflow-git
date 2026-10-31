@@ -1,15 +1,13 @@
-/* Workflow Git Embedded & Sidebar Styles */
+/* Workflow Git Embedded Sidebar Styles */
 
-/* Quick Commit Bar inside Sidebar */
 .wfg-sidebar-commit-container {
-  margin: 10px 10px 14px 10px;
+  margin: 8px 10px 12px 10px;
   background: #1e1e24;
   border: 1px solid #2d2d38;
   border-radius: 8px;
   padding: 10px;
   font-family: inherit;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
-  transition: border-color 0.2s;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
   box-sizing: border-box;
 }
 
@@ -23,28 +21,59 @@
   justify-content: space-between;
   margin-bottom: 8px;
   font-size: 11px;
-  color: #a1a1aa;
 }
 
-.wfg-sidebar-current-file {
+.wfg-sidebar-file-badge {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   font-weight: 600;
   color: #38bdf8;
-  max-width: 170px;
+  max-width: 130px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.wfg-sidebar-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .wfg-sidebar-branch-tag {
   background: #27272a;
   color: #94a3b8;
-  padding: 1px 6px;
+  padding: 1px 5px;
   border-radius: 4px;
   font-size: 10px;
   border: 1px solid #3f3f46;
+}
+
+.wfg-sidebar-history-toggle-btn {
+  background: rgba(56, 189, 248, 0.12);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  transition: all 0.15s;
+}
+
+.wfg-sidebar-history-toggle-btn:hover {
+  background: #0284c7;
+  color: #ffffff;
+  border-color: #38bdf8;
+}
+
+.wfg-sidebar-history-toggle-btn.active {
+  background: #0284c7;
+  color: #ffffff;
 }
 
 .wfg-sidebar-input-row {
@@ -100,64 +129,32 @@
   cursor: not-allowed;
 }
 
-/* Inline Git Badge next to each workflow item in sidebar list */
-.wfg-inline-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  background: rgba(56, 189, 248, 0.15);
-  color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.35);
-  border-radius: 12px;
-  padding: 2px 7px;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s;
-  user-select: none;
-  flex-shrink: 0;
-  margin-left: 8px;
-}
-
-.wfg-inline-badge:hover {
-  background: #0284c7;
-  color: #ffffff;
-  border-color: #38bdf8;
-  transform: scale(1.05);
-}
-
-.wfg-inline-badge.expanded {
-  background: #0284c7;
-  color: #ffffff;
-  border-color: #38bdf8;
-}
-
-/* Inline History Accordion / Tree */
-.wfg-inline-history-tree {
-  margin: 6px 0 10px 14px;
-  border-left: 2px solid #38bdf8;
-  padding-left: 8px;
-  display: flex;
+/* History Accordion inside Commit Bar */
+.wfg-sidebar-history-panel {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #2d2d38;
+  display: none;
   flex-direction: column;
   gap: 6px;
-  animation: wfg-slide-down 0.2s ease-out;
+  max-height: 220px;
+  overflow-y: auto;
+  animation: wfg-fade-in 0.15s ease-out;
 }
 
-@keyframes wfg-slide-down {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.wfg-sidebar-history-panel.expanded {
+  display: flex;
+}
+
+@keyframes wfg-fade-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .wfg-history-node {
-  background: #1e1e24;
-  border: 1px solid #2d2d35;
-  border-radius: 6px;
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 5px;
   padding: 6px 8px;
   font-size: 11px;
   display: flex;
@@ -168,7 +165,7 @@
 }
 
 .wfg-history-node:hover {
-  background: #272730;
+  background: #232328;
   border-color: #38bdf8;
 }
 
@@ -186,7 +183,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 140px;
 }
 
 .wfg-history-node-meta {
@@ -194,7 +190,7 @@
   align-items: center;
   gap: 6px;
   font-size: 10px;
-  color: #64748b;
+  color: #71717a;
 }
 
 .wfg-history-node-hash {
@@ -205,7 +201,7 @@
 .wfg-history-restore-btn {
   background: #27272a;
   color: #e2e8f0;
-  border: 1px solid #475569;
+  border: 1px solid #3f3f46;
   border-radius: 4px;
   padding: 3px 8px;
   font-size: 10px;
@@ -222,7 +218,7 @@
   border-color: #38bdf8;
 }
 
-/* Toast Notification */
+/* Toast */
 .workflow-git-toast {
   position: fixed;
   bottom: 24px;
