@@ -43,8 +43,46 @@ function cleanWorkflowName(raw) {
   return name;
 }
 
-// Extract current active workflow file name with tab-first priority
+// Extract current active workflow file info with nested folder support
+function getCurrentWorkflowInfo() {
+  try {
+    const vueApp = document.querySelector("#vue-app")?.__vue_app__;
+    const pinia = vueApp?.config?.globalProperties?.$pinia;
+    const workflowStore = pinia?._s?.get("workflow");
+    if (workflowStore && workflowStore.activeWorkflow) {
+      const fullPath = (workflowStore.activeWorkflow.path || "").replace(/\\/g, "/");
+      let relPath = fullPath.replace(/^workflows[/\\]/i, "").replace(/^\/+/, "");
+      if (relPath) {
+        if (!relPath.endsWith(".json")) relPath += ".json";
+        const parts = relPath.split("/");
+        const baseName = parts[parts.length - 1];
+        const folder = parts.length > 1 ? parts.slice(0, -1).join("/") : "";
+        lastKnownWorkflowName = relPath;
+        return {
+          relPath,
+          baseName,
+          folder,
+          displayName: folder ? `${baseName} (${folder})` : baseName
+        };
+      }
+    }
+  } catch (e) {}
+
+  const raw = getCurrentWorkflowNameFallback();
+  return {
+    relPath: raw,
+    baseName: raw,
+    folder: "",
+    displayName: raw
+  };
+}
+
 function getCurrentWorkflowName() {
+  return getCurrentWorkflowInfo().relPath;
+}
+
+// Fallback: extract from active tab DOM or document title
+function getCurrentWorkflowNameFallback() {
   try {
     // 1. Prioritize PrimeVue active workflow tab: .p-togglebutton-checked .workflow-tab
     const activeTab = document.querySelector(".p-togglebutton-checked .workflow-tab");
@@ -172,19 +210,21 @@ class SidebarVersionIntegration {
   checkWorkflowSwitch(force = false) {
     if (this.isProcessing) return;
     try {
-      const activeName = getCurrentWorkflowName();
+      const info = getCurrentWorkflowInfo();
+      const activeName = info.relPath;
       if (!activeName) return;
 
       const commitBar = document.querySelector("#wfg-sidebar-commit-bar");
       if (!commitBar) return;
 
       const nameEl = commitBar.querySelector("#wfg-current-file-name");
-      const displayedName = nameEl ? nameEl.textContent.trim() : "";
+      const currentRel = nameEl ? nameEl.getAttribute("data-rel-path") || nameEl.textContent.trim() : "";
 
-      if (force || activeName !== this.currentWorkflowName || activeName !== displayedName) {
+      if (force || activeName !== this.currentWorkflowName || activeName !== currentRel) {
         if (nameEl) {
-          nameEl.textContent = activeName;
+          nameEl.textContent = info.displayName;
           nameEl.title = activeName;
+          nameEl.setAttribute("data-rel-path", activeName);
         }
         this.syncActiveWorkflowMetadata(activeName, commitBar);
       }
@@ -309,13 +349,16 @@ class SidebarVersionIntegration {
 
   injectQuickCommitBar(searchInput, panel) {
     let commitBar = panel.querySelector("#wfg-sidebar-commit-bar");
-    const currentName = getCurrentWorkflowName();
+    const info = getCurrentWorkflowInfo();
+    const currentName = info.relPath;
 
     if (commitBar) {
       const nameEl = commitBar.querySelector("#wfg-current-file-name");
-      if (nameEl && nameEl.textContent !== currentName) {
-        nameEl.textContent = currentName;
+      const currentRel = nameEl ? nameEl.getAttribute("data-rel-path") || nameEl.textContent.trim() : "";
+      if (nameEl && (currentRel !== currentName || nameEl.textContent !== info.displayName)) {
+        nameEl.textContent = info.displayName;
         nameEl.title = currentName;
+        nameEl.setAttribute("data-rel-path", currentName);
         this.syncActiveWorkflowMetadata(currentName, commitBar);
       }
       return;
@@ -334,7 +377,7 @@ class SidebarVersionIntegration {
             <path d="M13 6h3a2 2 0 0 1 2 2v7"></path>
             <line x1="6" y1="9" x2="6" y2="21"></line>
           </svg>
-          <span id="wfg-current-file-name" title="${currentName}">${currentName}</span>
+          <span id="wfg-current-file-name" data-rel-path="${currentName}" title="${currentName}">${info.displayName}</span>
         </div>
         <div class="wfg-sidebar-header-right">
           <span class="wfg-version-badge" id="wfg-version-badge">版本</span>

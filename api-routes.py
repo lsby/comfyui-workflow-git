@@ -121,7 +121,7 @@ def register_api_routes(app: web.Application, version_service, config_manager):
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
-    # Middleware to automatically intercept ComfyUI native right-click workflow renames
+    # Middleware to automatically intercept ComfyUI native right-click workflow renames and moves
     @web.middleware
     async def rename_interceptor_middleware(request, handler):
         response = await handler(request)
@@ -129,14 +129,20 @@ def register_api_routes(app: web.Application, version_service, config_manager):
             try:
                 src_param = request.match_info.get("file", "")
                 dest_param = request.match_info.get("dest", "")
-                src = urllib.parse.unquote(src_param)
-                dest = urllib.parse.unquote(dest_param)
+                src = urllib.parse.unquote(src_param).replace("\\", "/").strip("/")
+                dest = urllib.parse.unquote(dest_param).replace("\\", "/").strip("/")
                 if "workflows" in src and "workflows" in dest:
-                    src_name = Path(src).name
-                    dest_name = Path(dest).name
-                    version_service.workflows_dir = config_manager.resolve_workflows_dir()
-                    version_service.storage_dir = version_service.workflows_dir / ".workflow_versions"
-                    version_service.rename_workflow(src_name, dest_name)
+                    def get_rel(p: str) -> str:
+                        if "workflows/" in p:
+                            return p.split("workflows/", 1)[1]
+                        return p
+
+                    src_rel = get_rel(src)
+                    dest_rel = get_rel(dest)
+                    if src_rel and dest_rel:
+                        version_service.workflows_dir = config_manager.resolve_workflows_dir()
+                        version_service.storage_dir = version_service.workflows_dir / ".workflow_versions"
+                        version_service.rename_workflow(src_rel, dest_rel)
             except Exception as e:
                 print(f"[WorkflowVersion] Error in rename interceptor: {e}")
         return response
