@@ -125,6 +125,9 @@ class SidebarVersionIntegration {
   }
 
   init() {
+    window.__sidebarVersionIntegration = this;
+    this.hookFetchForRename();
+
     // Listen for tab navigation clicks to inject UI when Workflows drawer opens
     document.addEventListener("click", (e) => {
       const target = e.target.closest("button, [class*='tab'], [class*='icon'], [class*='nav'], [class*='sidebar']");
@@ -138,10 +141,54 @@ class SidebarVersionIntegration {
     setTimeout(() => this.safeInject(), 800);
     setTimeout(() => this.safeInject(), 2000);
 
-    // Periodically check for semantic modifications every 800ms
+    // Periodically check for active workflow name switch and semantic modifications every 800ms
     setInterval(() => {
+      this.checkWorkflowSwitch();
       this.checkDirtyState();
     }, 800);
+  }
+
+  hookFetchForRename() {
+    try {
+      const origFetch = window.fetch;
+      const self = this;
+      window.fetch = async function(...args) {
+        const resp = await origFetch.apply(this, args);
+        try {
+          const url = typeof args[0] === "string" ? args[0] : (args[0] && args[0].url ? args[0].url : "");
+          if (url.includes("/move/") && url.includes("/userdata/")) {
+            setTimeout(() => {
+              self.checkWorkflowSwitch(true);
+            }, 300);
+          }
+        } catch (e) {}
+        return resp;
+      };
+    } catch (e) {
+      console.warn("[WorkflowVersion] Failed to hook fetch for rename:", e);
+    }
+  }
+
+  checkWorkflowSwitch(force = false) {
+    if (this.isProcessing) return;
+    try {
+      const activeName = getCurrentWorkflowName();
+      if (!activeName) return;
+
+      const commitBar = document.querySelector("#wfg-sidebar-commit-bar");
+      if (!commitBar) return;
+
+      const nameEl = commitBar.querySelector("#wfg-current-file-name");
+      const displayedName = nameEl ? nameEl.textContent.trim() : "";
+
+      if (force || activeName !== this.currentWorkflowName || activeName !== displayedName) {
+        if (nameEl) {
+          nameEl.textContent = activeName;
+          nameEl.title = activeName;
+        }
+        this.syncActiveWorkflowMetadata(activeName, commitBar);
+      }
+    } catch (e) {}
   }
 
   checkDirtyState() {
