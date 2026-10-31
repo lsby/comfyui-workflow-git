@@ -114,11 +114,13 @@ function getGraphFingerprint(graph) {
 class SidebarVersionIntegration {
   constructor() {
     this.isProcessing = false;
-    this.isHistoryExpanded = false;
     this.currentWorkflowName = "";
     this.activeVersionHash = "";
     this.lastCleanFingerprint = "";
     this.isDirty = false;
+    this.currentPage = 1;
+    this.pageSize = 4;
+    this.allHistoryItems = [];
     this.init();
   }
 
@@ -230,23 +232,32 @@ class SidebarVersionIntegration {
     this.injectQuickCommitBar(searchInput, panel);
   }
 
-  async syncActiveWorkflowMetadata(fileName) {
+  async syncActiveWorkflowMetadata(fileName, commitBar) {
     this.currentWorkflowName = fileName;
+    this.currentPage = 1;
     try {
-      const res = await fetch(`/workflow-git/history?file=${encodeURIComponent(fileName)}&limit=1`);
+      const res = await fetch(`/workflow-git/history?file=${encodeURIComponent(fileName)}&limit=100`);
       const data = await res.json();
-      if (data.success && data.history && data.history.length > 0) {
-        this.activeVersionHash = data.history[0].short_hash;
+      this.allHistoryItems = (data.success && data.history) ? data.history : [];
+      if (this.allHistoryItems.length > 0) {
+        this.activeVersionHash = this.allHistoryItems[0].short_hash;
       } else {
         this.activeVersionHash = "";
       }
-    } catch (e) {}
+    } catch (e) {
+      this.allHistoryItems = [];
+      this.activeVersionHash = "";
+    }
 
     if (app.graph) {
       this.lastCleanFingerprint = getGraphFingerprint(app.graph.serialize());
     }
     this.isDirty = false;
     this.updateDirtyIndicator();
+
+    if (commitBar) {
+      this.renderHistoryPage(commitBar, fileName);
+    }
   }
 
   injectQuickCommitBar(searchInput, panel) {
@@ -258,10 +269,7 @@ class SidebarVersionIntegration {
       if (nameEl && nameEl.textContent !== currentName) {
         nameEl.textContent = currentName;
         nameEl.title = currentName;
-        this.syncActiveWorkflowMetadata(currentName);
-        if (this.isHistoryExpanded) {
-          this.loadHistoryList(commitBar, currentName);
-        }
+        this.syncActiveWorkflowMetadata(currentName, commitBar);
       }
       return;
     }
@@ -284,9 +292,6 @@ class SidebarVersionIntegration {
         <div class="wfg-sidebar-header-right">
           <span class="wfg-version-badge" id="wfg-version-badge">版本</span>
           <span class="wfg-dirty-pill clean" id="wfg-dirty-pill">✔ 干净</span>
-          <button id="wfg-history-toggle-btn" class="wfg-sidebar-history-toggle-btn" title="查看该工作流历史版本">
-            📜 历史 <span id="wfg-history-arrow">▾</span>
-          </button>
         </div>
       </div>
       <div class="wfg-sidebar-input-row">
@@ -300,8 +305,13 @@ class SidebarVersionIntegration {
           ✔ 保存
         </button>
       </div>
-      <div id="wfg-sidebar-history-panel" class="wfg-sidebar-history-panel">
-        <div style="font-size: 11px; color: #64748b; padding: 4px; text-align: center;">点击展开历史版本</div>
+      <div id="wfg-sidebar-history-container" class="wfg-sidebar-history-container">
+        <div id="wfg-sidebar-history-list" class="wfg-sidebar-history-list"></div>
+        <div id="wfg-sidebar-pagination" class="wfg-sidebar-pagination">
+          <button id="wfg-page-prev" class="wfg-page-btn" title="上一页">◀ 上一页</button>
+          <span id="wfg-page-info" class="wfg-page-info">1 / 1</span>
+          <button id="wfg-page-next" class="wfg-page-btn" title="下一页">下一页 ▶</button>
+        </div>
       </div>
     `;
 
@@ -315,26 +325,27 @@ class SidebarVersionIntegration {
 
     const input = commitBar.querySelector("#wfg-quick-msg");
     const commitBtn = commitBar.querySelector("#wfg-quick-commit-btn");
-    const historyBtn = commitBar.querySelector("#wfg-history-toggle-btn");
-    const historyPanel = commitBar.querySelector("#wfg-sidebar-history-panel");
+    const prevBtn = commitBar.querySelector("#wfg-page-prev");
+    const nextBtn = commitBar.querySelector("#wfg-page-next");
 
-    // Initialize version metadata for current file
-    this.syncActiveWorkflowMetadata(currentName);
-
-    // Toggle history view
-    historyBtn.onclick = () => {
-      this.isHistoryExpanded = !this.isHistoryExpanded;
-      if (this.isHistoryExpanded) {
-        historyBtn.classList.add("active");
-        historyPanel.classList.add("expanded");
-        commitBar.querySelector("#wfg-history-arrow").textContent = "▴";
-        this.loadHistoryList(commitBar, getCurrentWorkflowName());
-      } else {
-        historyBtn.classList.remove("active");
-        historyPanel.classList.remove("expanded");
-        commitBar.querySelector("#wfg-history-arrow").textContent = "▾";
+    // Hook pagination buttons
+    prevBtn.onclick = () => {
+      if (this.currentPage > 1) {
+        this.currentPage--;
+        this.renderHistoryPage(commitBar, getCurrentWorkflowName());
       }
     };
+
+    nextBtn.onclick = () => {
+      const totalPages = Math.max(1, Math.ceil(this.allHistoryItems.length / this.pageSize));
+      if (this.currentPage < totalPages) {
+        this.currentPage++;
+        this.renderHistoryPage(commitBar, getCurrentWorkflowName());
+      }
+    };
+
+    // Initialize version metadata and render initial list
+    this.syncActiveWorkflowMetadata(currentName, commitBar);
 
     // Save snapshot logic
     const doCommit = async () => {
@@ -365,15 +376,14 @@ class SidebarVersionIntegration {
         this.activeVersionHash = data.commit_hash;
         this.lastCleanFingerprint = getGraphFingerprint(workflowData);
         this.isDirty = false;
+        this.currentPage = 1;
         this.updateDirtyIndicator();
 
         showToast(`✔ 已保存版本 [#${data.commit_hash}]: ${msg}`);
         input.value = "";
 
-        // If history is open, refresh it immediately
-        if (this.isHistoryExpanded) {
-          this.loadHistoryList(commitBar, fileName);
-        }
+        // Reload history list fresh from server
+        this.loadHistoryList(commitBar, fileName);
       } catch (e) {
         alert(`保存版本失败: ${e.message}`);
       } finally {
@@ -392,131 +402,158 @@ class SidebarVersionIntegration {
   }
 
   async loadHistoryList(commitBar, fileName) {
-    const historyPanel = commitBar.querySelector("#wfg-sidebar-history-panel");
-    if (!historyPanel) return;
-
-    historyPanel.innerHTML = `<div style="font-size: 11px; color: #64748b; padding: 6px; text-align: center;">正在读取历史版本...</div>`;
-
     try {
-      const res = await fetch(`/workflow-git/history?file=${encodeURIComponent(fileName)}&limit=50`);
+      const res = await fetch(`/workflow-git/history?file=${encodeURIComponent(fileName)}&limit=100`);
       const data = await res.json();
-
-      if (!data.success || !data.history.length) {
-        historyPanel.innerHTML = `<div style="font-size: 11px; color: #64748b; padding: 6px; text-align: center;">[${fileName}] 暂无历史版本</div>`;
-        return;
-      }
-
-      historyPanel.innerHTML = "";
-      data.history.forEach((commit) => {
-        const isCurrentActive = commit.short_hash === this.activeVersionHash;
-        const node = document.createElement("div");
-        node.className = `wfg-history-node ${isCurrentActive ? "is-active" : ""}`;
-        node.innerHTML = `
-          <div class="wfg-history-node-left">
-            <div class="wfg-history-node-msg" title="${commit.message}">${commit.message}</div>
-            <div class="wfg-history-node-meta">
-              <span class="wfg-history-node-hash">#${commit.short_hash}</span>
-              ${isCurrentActive ? `<span class="wfg-active-tag">当前基底</span>` : ""}
-              <span>${commit.date ? commit.date.split(" ")[0] : ""}</span>
-            </div>
-          </div>
-          <div class="wfg-history-node-actions">
-            <button class="wfg-history-restore-btn ${isCurrentActive && !this.isDirty ? "current" : ""}" title="将此版本载入当前画布">
-              ${isCurrentActive ? (this.isDirty ? "还原" : "当前") : "载入"}
-            </button>
-            <button class="wfg-history-delete-btn" title="删除此历史版本">
-              🗑️
-            </button>
-          </div>
-        `;
-
-        // Restore button: loads graph into CURRENT workflow without opening Unsaved tab
-        node.querySelector(".wfg-history-restore-btn").onclick = async (e) => {
-          e.stopPropagation();
-          if (isCurrentActive && !this.isDirty) {
-            showToast(`当前画布已经是该版本 (#${commit.short_hash})`);
-            return;
-          }
-
-          if (!confirm(`确定要将 [${fileName}] 恢复到版本 #${commit.short_hash} ("${commit.message}") 吗？当前画布改动将被覆盖。`)) {
-            return;
-          }
-
-          try {
-            this.isProcessing = true;
-            const checkoutRes = await fetch(`/workflow-git/checkout?hash=${commit.short_hash}&file=${encodeURIComponent(fileName)}`);
-            const checkoutData = await checkoutRes.json();
-            if (!checkoutData.success) throw new Error(checkoutData.error);
-
-            if (checkoutData.workflow) {
-              try {
-                await app.loadGraphData(checkoutData.workflow, true, true, fileName);
-              } catch (loadErr) {
-                if (app.graph && typeof app.graph.configure === "function") {
-                  app.graph.configure(checkoutData.workflow);
-                } else {
-                  app.loadGraphData(checkoutData.workflow);
-                }
-              }
-
-              this.activeVersionHash = commit.short_hash;
-
-              // Give LiteGraph canvas 350ms to settle node layout, then capture clean baseline
-              setTimeout(() => {
-                if (app.graph) {
-                  this.lastCleanFingerprint = getGraphFingerprint(app.graph.serialize());
-                } else {
-                  this.lastCleanFingerprint = getGraphFingerprint(checkoutData.workflow);
-                }
-                this.isDirty = false;
-                this.isProcessing = false;
-                this.updateDirtyIndicator();
-                this.loadHistoryList(commitBar, fileName);
-              }, 350);
-
-              showToast(`✔ 已载入 [${fileName}] 版本 (#${commit.short_hash})`);
-            }
-          } catch (err) {
-            this.isProcessing = false;
-            alert(`载入失败: ${err.message}`);
-          }
-        };
-
-        // Delete button: deletes the specific snapshot
-        node.querySelector(".wfg-history-delete-btn").onclick = async (e) => {
-          e.stopPropagation();
-          if (!confirm(`确定要删除历史版本 #${commit.short_hash} ("${commit.message}") 吗？此操作无法撤销。`)) {
-            return;
-          }
-
-          try {
-            const delRes = await fetch("/workflow-git/delete", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                file_name: fileName,
-                hash: commit.short_hash
-              })
-            });
-            const delData = await delRes.json();
-            if (!delData.success) throw new Error(delData.error || "删除失败");
-
-            showToast(`🗑️ 已删除版本 #${commit.short_hash}`);
-            if (this.activeVersionHash === commit.short_hash) {
-              this.activeVersionHash = "";
-              this.updateDirtyIndicator();
-            }
-            this.loadHistoryList(commitBar, fileName);
-          } catch (err) {
-            alert(`删除失败: ${err.message}`);
-          }
-        };
-
-        historyPanel.appendChild(node);
-      });
+      this.allHistoryItems = (data.success && data.history) ? data.history : [];
     } catch (e) {
-      historyPanel.innerHTML = `<div style="font-size: 11px; color: #ef4444; padding: 6px; text-align: center;">读取失败: ${e.message}</div>`;
+      this.allHistoryItems = [];
     }
+    this.renderHistoryPage(commitBar, fileName);
+  }
+
+  renderHistoryPage(commitBar, fileName) {
+    const listEl = commitBar.querySelector("#wfg-sidebar-history-list");
+    const pageInfo = commitBar.querySelector("#wfg-page-info");
+    const prevBtn = commitBar.querySelector("#wfg-page-prev");
+    const nextBtn = commitBar.querySelector("#wfg-page-next");
+    const paginationEl = commitBar.querySelector("#wfg-sidebar-pagination");
+
+    if (!listEl) return;
+
+    const totalCount = this.allHistoryItems.length;
+    const totalPages = Math.max(1, Math.ceil(totalCount / this.pageSize));
+
+    if (this.currentPage > totalPages) this.currentPage = totalPages;
+    if (this.currentPage < 1) this.currentPage = 1;
+
+    // Update pagination controls
+    if (pageInfo) {
+      pageInfo.textContent = `${this.currentPage} / ${totalPages} (${totalCount}条)`;
+    }
+    if (prevBtn) prevBtn.disabled = this.currentPage <= 1;
+    if (nextBtn) nextBtn.disabled = this.currentPage >= totalPages;
+
+    if (paginationEl) {
+      paginationEl.style.display = totalCount > 0 ? "flex" : "none";
+    }
+
+    if (totalCount === 0) {
+      listEl.innerHTML = `<div style="font-size: 11px; color: #64748b; padding: 8px; text-align: center;">[${fileName}] 暂无历史版本</div>`;
+      return;
+    }
+
+    const startIndex = (this.currentPage - 1) * this.pageSize;
+    const pageItems = this.allHistoryItems.slice(startIndex, startIndex + this.pageSize);
+
+    listEl.innerHTML = "";
+    pageItems.forEach((commit) => {
+      const isCurrentActive = commit.short_hash === this.activeVersionHash;
+      const node = document.createElement("div");
+      node.className = `wfg-history-node ${isCurrentActive ? "is-active" : ""}`;
+      node.innerHTML = `
+        <div class="wfg-history-node-left">
+          <div class="wfg-history-node-msg" title="${commit.message}">${commit.message}</div>
+          <div class="wfg-history-node-meta">
+            <span class="wfg-history-node-hash">#${commit.short_hash}</span>
+            ${isCurrentActive ? `<span class="wfg-active-tag">当前基底</span>` : ""}
+            <span>${commit.date ? commit.date.split(" ")[0] : ""}</span>
+          </div>
+        </div>
+        <div class="wfg-history-node-actions">
+          <button class="wfg-history-restore-btn ${isCurrentActive && !this.isDirty ? "current" : ""}" title="将此版本载入当前画布">
+            ${isCurrentActive ? (this.isDirty ? "还原" : "当前") : "载入"}
+          </button>
+          <button class="wfg-history-delete-btn" title="删除此历史版本">
+            🗑️
+          </button>
+        </div>
+      `;
+
+      // Restore button
+      node.querySelector(".wfg-history-restore-btn").onclick = async (e) => {
+        e.stopPropagation();
+        if (isCurrentActive && !this.isDirty) {
+          showToast(`当前画布已经是该版本 (#${commit.short_hash})`);
+          return;
+        }
+
+        if (!confirm(`确定要将 [${fileName}] 恢复到版本 #${commit.short_hash} ("${commit.message}") 吗？当前画布改动将被覆盖。`)) {
+          return;
+        }
+
+        try {
+          this.isProcessing = true;
+          const checkoutRes = await fetch(`/workflow-git/checkout?hash=${commit.short_hash}&file=${encodeURIComponent(fileName)}`);
+          const checkoutData = await checkoutRes.json();
+          if (!checkoutData.success) throw new Error(checkoutData.error);
+
+          if (checkoutData.workflow) {
+            try {
+              await app.loadGraphData(checkoutData.workflow, true, true, fileName);
+            } catch (loadErr) {
+              if (app.graph && typeof app.graph.configure === "function") {
+                app.graph.configure(checkoutData.workflow);
+              } else {
+                app.loadGraphData(checkoutData.workflow);
+              }
+            }
+
+            this.activeVersionHash = commit.short_hash;
+
+            // Wait 350ms for canvas to stabilize, then capture clean baseline
+            setTimeout(() => {
+              if (app.graph) {
+                this.lastCleanFingerprint = getGraphFingerprint(app.graph.serialize());
+              } else {
+                this.lastCleanFingerprint = getGraphFingerprint(checkoutData.workflow);
+              }
+              this.isDirty = false;
+              this.isProcessing = false;
+              this.updateDirtyIndicator();
+              this.renderHistoryPage(commitBar, fileName);
+            }, 350);
+
+            showToast(`✔ 已载入 [${fileName}] 版本 (#${commit.short_hash})`);
+          }
+        } catch (err) {
+          this.isProcessing = false;
+          alert(`载入失败: ${err.message}`);
+        }
+      };
+
+      // Delete button
+      node.querySelector(".wfg-history-delete-btn").onclick = async (e) => {
+        e.stopPropagation();
+        if (!confirm(`确定要删除历史版本 #${commit.short_hash} ("${commit.message}") 吗？此操作无法撤销。`)) {
+          return;
+        }
+
+        try {
+          const delRes = await fetch("/workflow-git/delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              file_name: fileName,
+              hash: commit.short_hash
+            })
+          });
+          const delData = await delRes.json();
+          if (!delData.success) throw new Error(delData.error || "删除失败");
+
+          showToast(`🗑️ 已删除版本 #${commit.short_hash}`);
+          if (this.activeVersionHash === commit.short_hash) {
+            this.activeVersionHash = "";
+            this.updateDirtyIndicator();
+          }
+          this.loadHistoryList(commitBar, fileName);
+        } catch (err) {
+          alert(`删除失败: ${err.message}`);
+        }
+      };
+
+      listEl.appendChild(node);
+    });
   }
 }
 
