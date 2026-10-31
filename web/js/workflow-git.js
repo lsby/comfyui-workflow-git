@@ -55,7 +55,7 @@ class WorkflowGitUI {
         <div class="workflow-git-tabs">
           <div class="workflow-git-tab active" data-tab="commit">Commit</div>
           <div class="workflow-git-tab" data-tab="history">History</div>
-          <div class="workflow-git-tab" data-tab="settings">Settings</div>
+          <div class="workflow-git-tab" data-tab="settings">Repository Info</div>
         </div>
 
         <div class="workflow-git-body">
@@ -105,17 +105,14 @@ class WorkflowGitUI {
           <!-- Settings Tab -->
           <div class="workflow-git-panel" id="wfg-panel-settings">
             <div class="workflow-git-field">
-              <label class="workflow-git-label">Workflows Directory Path (Supports relative paths like ../../../../../工作流)</label>
-              <input type="text" id="wfg-config-dir" class="workflow-git-input" />
+              <label class="workflow-git-label">Managed Workflows Directory (ComfyUI Native Workflows)</label>
+              <input type="text" id="wfg-config-dir" class="workflow-git-input" readonly style="opacity: 0.8; cursor: not-allowed;" />
               <div style="font-size: 11px; color: #71717a; margin-top: 4px;" id="wfg-resolved-path"></div>
             </div>
 
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 24px;">
+            <div style="display: flex; justify-content: flex-end; align-items: center; margin-top: 24px;">
               <button class="workflow-git-btn workflow-git-btn-secondary" id="wfg-init-git-btn">
-                Initialize Git Here
-              </button>
-              <button class="workflow-git-btn workflow-git-btn-primary" id="wfg-save-config-btn">
-                Save Settings
+                Re-initialize Git
               </button>
             </div>
           </div>
@@ -157,9 +154,6 @@ class WorkflowGitUI {
     this.overlay.querySelector("#wfg-refresh-history").onclick = () => this.loadHistory();
     this.overlay.querySelector("#wfg-history-file-select").onchange = () => this.loadHistory();
 
-    // Save config
-    this.overlay.querySelector("#wfg-save-config-btn").onclick = () => this.saveConfig();
-
     // Init git
     this.overlay.querySelector("#wfg-init-git-btn").onclick = () => this.initGit();
 
@@ -173,14 +167,12 @@ class WorkflowGitUI {
 
   detectCurrentWorkflowName() {
     try {
-      // 1. From document.title: e.g. "*最简工作流 (2) - ComfyUI"
       if (document.title) {
         let title = document.title
           .replace(/^[*•\s]+/, "")
           .replace(/\s*-\s*ComfyUI.*$/i, "")
           .trim();
         if (title) {
-          // If ends with (数字), e.g. "最简工作流 (2)" -> "最简工作流.json"
           title = title.replace(/\s*\(\d+\)$/, "").trim();
           if (title && title.toLowerCase() !== "comfyui") {
             return title.endsWith(".json") ? title : `${title}.json`;
@@ -188,7 +180,6 @@ class WorkflowGitUI {
         }
       }
 
-      // 2. From UI elements
       const tabEl = document.querySelector(".comfyui-workflow-tab.active, [data-testid='workflow-tab-active']");
       if (tabEl && tabEl.textContent.trim()) {
         let name = tabEl.textContent.trim().replace(/^[*•\s]+/, "").trim();
@@ -236,7 +227,7 @@ class WorkflowGitUI {
       if (!data.success) throw new Error(data.error);
 
       this.status = data.status;
-      const { is_repo, branch, target_dir, uncommitted, files } = data.status;
+      const { is_repo, branch, target_dir, files } = data.status;
 
       // Update status bar
       if (is_repo) {
@@ -270,8 +261,8 @@ class WorkflowGitUI {
       });
 
       // Settings config
-      this.overlay.querySelector("#wfg-config-dir").value = data.config.workflows_dir || "";
-      this.overlay.querySelector("#wfg-resolved-path").textContent = `Resolved directory: ${data.resolved_dir}`;
+      this.overlay.querySelector("#wfg-config-dir").value = data.resolved_dir || "";
+      this.overlay.querySelector("#wfg-resolved-path").textContent = `Native ComfyUI workflows location (100% linked with UI)`;
     } catch (e) {
       statusBar.innerHTML = `<span style="color: #ef4444;">Error checking status: ${e.message}</span>`;
     }
@@ -405,23 +396,6 @@ class WorkflowGitUI {
       alert(`Init failed: ${e.message}`);
     }
   }
-
-  async saveConfig() {
-    const dir = this.overlay.querySelector("#wfg-config-dir").value.trim();
-    try {
-      const res = await fetch("/workflow-git/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workflows_dir: dir })
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
-      showToast("✔ Configuration saved!");
-      await this.refreshStatus();
-    } catch (e) {
-      alert(`Failed to save config: ${e.message}`);
-    }
-  }
 }
 
 // Register ComfyUI Extension
@@ -498,7 +472,6 @@ app.registerExtension({
       `;
       floatBtn.title = "Drag to reposition | Click to open (Alt + G)";
 
-      // Restore saved position if available
       const savedPos = localStorage.getItem("comfyui-workflow-git-pos");
       if (savedPos) {
         try {
@@ -512,7 +485,6 @@ app.registerExtension({
         } catch (e) {}
       }
 
-      // Drag implementation
       let isDragging = false;
       let hasMoved = false;
       let startX = 0, startY = 0;
@@ -581,7 +553,6 @@ app.registerExtension({
       document.body.appendChild(floatBtn);
     };
 
-    // Periodic attempts to inject buttons as DOM stabilizes
     const tryInject = async () => {
       await injectTopBarButton();
       injectFloatingButton();

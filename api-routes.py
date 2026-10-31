@@ -9,13 +9,15 @@ def register_api_routes(app: web.Application, git_service, config_manager):
     @routes.get("/workflow-git/status")
     async def get_status(request):
         try:
+            # Always ensure target_dir points to native workflows directory
+            git_service.target_dir = config_manager.resolve_workflows_dir()
             status = git_service.get_status()
             config = config_manager.get_config()
             return web.json_response({
                 "success": True,
                 "status": status,
                 "config": config,
-                "resolved_dir": str(config_manager.resolve_workflows_dir())
+                "resolved_dir": str(git_service.target_dir)
             })
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
@@ -23,6 +25,7 @@ def register_api_routes(app: web.Application, git_service, config_manager):
     @routes.post("/workflow-git/init")
     async def init_repository(request):
         try:
+            git_service.target_dir = config_manager.resolve_workflows_dir()
             res = git_service.init_repo()
             return web.json_response(res)
         except Exception as e:
@@ -31,6 +34,7 @@ def register_api_routes(app: web.Application, git_service, config_manager):
     @routes.post("/workflow-git/commit")
     async def commit_workflow(request):
         try:
+            git_service.target_dir = config_manager.resolve_workflows_dir()
             data = await request.json()
             file_name = data.get("file_name", "workflow.json").strip()
             workflow_data = data.get("workflow", {})
@@ -49,6 +53,7 @@ def register_api_routes(app: web.Application, git_service, config_manager):
     @routes.get("/workflow-git/history")
     async def get_history(request):
         try:
+            git_service.target_dir = config_manager.resolve_workflows_dir()
             file_name = request.query.get("file", None)
             limit = int(request.query.get("limit", 50))
             history = git_service.get_history(file_name=file_name, limit=limit)
@@ -59,6 +64,7 @@ def register_api_routes(app: web.Application, git_service, config_manager):
     @routes.get("/workflow-git/checkout")
     async def checkout_file(request):
         try:
+            git_service.target_dir = config_manager.resolve_workflows_dir()
             commit_hash = request.query.get("hash", "").strip()
             file_name = request.query.get("file", "").strip()
             if not commit_hash or not file_name:
@@ -79,6 +85,7 @@ def register_api_routes(app: web.Application, git_service, config_manager):
     @routes.get("/workflow-git/files")
     async def list_files(request):
         try:
+            git_service.target_dir = config_manager.resolve_workflows_dir()
             files = git_service.list_workflow_files()
             return web.json_response({"success": True, "files": files})
         except Exception as e:
@@ -96,12 +103,7 @@ def register_api_routes(app: web.Application, git_service, config_manager):
     @routes.post("/workflow-git/config")
     async def update_plugin_config(request):
         try:
-            data = await request.json()
-            if config_manager.save_config(data):
-                # Update git_service target_dir
-                git_service.target_dir = config_manager.resolve_workflows_dir()
-                return web.json_response({"success": True, "config": config_manager.get_config()})
-            return web.json_response({"success": False, "error": "Failed to save configuration"}, status=500)
+            return web.json_response({"success": True, "config": config_manager.get_config()})
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
