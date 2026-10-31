@@ -21,29 +21,68 @@ function showToast(message, duration = 3000) {
   setTimeout(() => toast.classList.remove("active"), duration);
 }
 
-// Extract current active workflow file name
+let lastKnownWorkflowName = "最简工作流.json";
+
+// Validate and clean workflow names, strictly filtering out execution progress strings
+function cleanWorkflowName(raw) {
+  if (!raw) return null;
+  let name = raw.trim();
+
+  // Remove dirty dots, stars, spaces
+  name = name.replace(/^[*•\s]+/, "").replace(/[*•\s]+$/, "").trim();
+
+  // Filter out ComfyUI execution progress like "[57%][70%] KSampler" or "Queue: 1"
+  if (/\[\s*\d+%\s*\]/i.test(name)) return null;
+  if (/^\[.*%\]/i.test(name)) return null;
+  if (/^ksampler/i.test(name) || /^queue/i.test(name)) return null;
+  if (!name || name.toLowerCase() === "comfyui") return null;
+
+  if (!name.endsWith(".json")) {
+    name = `${name}.json`;
+  }
+  return name;
+}
+
+// Extract current active workflow file name with tab-first priority
 function getCurrentWorkflowName() {
   try {
-    if (document.title) {
-      let title = document.title
-        .replace(/^[*•\s]+/, "")
-        .replace(/\s*-\s*ComfyUI.*$/i, "")
-        .trim();
-      if (title) {
-        title = title.replace(/\s*\(\d+\)$/, "").trim();
-        if (title && title.toLowerCase() !== "comfyui") {
-          return title.endsWith(".json") ? title : `${title}.json`;
+    // 1. Prioritize PrimeVue active workflow tab: .p-togglebutton-checked .workflow-tab
+    const activeTab = document.querySelector(".p-togglebutton-checked .workflow-tab");
+    if (activeTab) {
+      const span = activeTab.querySelector("span");
+      const text = span ? span.textContent : activeTab.textContent;
+      const parsed = cleanWorkflowName(text);
+      if (parsed) {
+        lastKnownWorkflowName = parsed;
+        return parsed;
+      }
+    }
+
+    // 2. Any active tab or workflow tab element
+    const tabEls = document.querySelectorAll(".workflow-tab, [class*='workflow-tab']");
+    for (const el of tabEls) {
+      if (el.closest(".p-togglebutton-checked") || el.classList.contains("active")) {
+        const span = el.querySelector("span") || el;
+        const parsed = cleanWorkflowName(span.textContent);
+        if (parsed) {
+          lastKnownWorkflowName = parsed;
+          return parsed;
         }
       }
     }
-    const tabEl = document.querySelector(".comfyui-workflow-tab.active, [data-testid='workflow-tab-active']");
-    if (tabEl && tabEl.textContent.trim()) {
-      let name = tabEl.textContent.trim().replace(/^[*•\s]+/, "").trim();
-      name = name.replace(/\s*\(\d+\)$/, "").trim();
-      if (name) return name.endsWith(".json") ? name : `${name}.json`;
+
+    // 3. Document title fallback ONLY IF it's not a progress indicator
+    if (document.title) {
+      let title = document.title.replace(/\s*-\s*ComfyUI.*$/i, "").trim();
+      const parsed = cleanWorkflowName(title);
+      if (parsed) {
+        lastKnownWorkflowName = parsed;
+        return parsed;
+      }
     }
   } catch (e) {}
-  return "workflow.json";
+
+  return lastKnownWorkflowName || "workflow.json";
 }
 
 class SidebarVersionIntegration {
