@@ -29,7 +29,7 @@
   gap: 5px;
   font-weight: 600;
   color: #38bdf8;
-  max-width: 130px;
+  max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -198,6 +198,13 @@
   font-family: monospace;
 }
 
+.wfg-history-node-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 .wfg-history-restore-btn {
   background: #27272a;
   color: #e2e8f0;
@@ -209,13 +216,32 @@
   cursor: pointer;
   transition: all 0.15s;
   white-space: nowrap;
-  flex-shrink: 0;
 }
 
 .wfg-history-restore-btn:hover {
   background: #0284c7;
   color: #ffffff;
   border-color: #38bdf8;
+}
+
+.wfg-history-delete-btn {
+  background: transparent;
+  color: #71717a;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.wfg-history-delete-btn:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
 }
 
 /* Toast */

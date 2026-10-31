@@ -46,7 +46,7 @@ function getCurrentWorkflowName() {
   return "workflow.json";
 }
 
-class SidebarGitIntegration {
+class SidebarVersionIntegration {
   constructor() {
     this.isProcessing = false;
     this.isHistoryExpanded = false;
@@ -54,7 +54,7 @@ class SidebarGitIntegration {
   }
 
   init() {
-    // Listen for clicks on the left sidebar navigation tabs
+    // Listen for tab navigation clicks to inject UI when Workflows drawer opens
     document.addEventListener("click", (e) => {
       const target = e.target.closest("button, [class*='tab'], [class*='icon'], [class*='nav'], [class*='sidebar']");
       if (target) {
@@ -74,7 +74,7 @@ class SidebarGitIntegration {
     try {
       this.doInject();
     } catch (e) {
-      console.warn("[WorkflowGit] Safe inject error:", e);
+      console.warn("[WorkflowVersion] Safe inject error:", e);
     } finally {
       this.isProcessing = false;
     }
@@ -112,7 +112,7 @@ class SidebarGitIntegration {
       if (nameEl && nameEl.textContent !== currentName) {
         nameEl.textContent = currentName;
         nameEl.title = currentName;
-        // If history is open, refresh for new file
+        // If history is open, refresh for new active file
         if (this.isHistoryExpanded) {
           this.loadHistoryList(commitBar, currentName);
         }
@@ -136,8 +136,8 @@ class SidebarGitIntegration {
           <span id="wfg-current-file-name" title="${currentName}">${currentName}</span>
         </div>
         <div class="wfg-sidebar-header-right">
-          <span class="wfg-sidebar-branch-tag" id="wfg-branch-tag">Git</span>
-          <button id="wfg-history-toggle-btn" class="wfg-sidebar-history-toggle-btn" title="查看该工作流提交历史">
+          <span class="wfg-sidebar-branch-tag" id="wfg-branch-tag">快照版本</span>
+          <button id="wfg-history-toggle-btn" class="wfg-sidebar-history-toggle-btn" title="查看该工作流历史版本">
             📜 历史 <span id="wfg-history-arrow">▾</span>
           </button>
         </div>
@@ -147,10 +147,10 @@ class SidebarGitIntegration {
           type="text"
           id="wfg-quick-msg"
           class="wfg-sidebar-commit-input"
-          placeholder="提交说明 (Enter 提交)..."
+          placeholder="版本修改说明 (Enter 保存)..."
         />
-        <button id="wfg-quick-commit-btn" class="wfg-sidebar-commit-btn" title="Commit 当前工作流">
-          ✔ Commit
+        <button id="wfg-quick-commit-btn" class="wfg-sidebar-commit-btn" title="保存当前工作流新版本">
+          ✔ 保存
         </button>
       </div>
       <div id="wfg-sidebar-history-panel" class="wfg-sidebar-history-panel">
@@ -186,7 +186,7 @@ class SidebarGitIntegration {
       }
     };
 
-    // Commit logic
+    // Save snapshot logic
     const doCommit = async () => {
       const msg = input.value.trim();
       if (!msg) {
@@ -196,7 +196,7 @@ class SidebarGitIntegration {
       const fileName = getCurrentWorkflowName();
       try {
         commitBtn.disabled = true;
-        commitBtn.textContent = "Committing...";
+        commitBtn.textContent = "保存中...";
 
         const workflowData = app.graph.serialize();
         const res = await fetch("/workflow-git/commit", {
@@ -212,18 +212,18 @@ class SidebarGitIntegration {
         const data = await res.json();
         if (!data.success) throw new Error(data.error);
 
-        showToast(`✔ 已提交 [${data.commit_hash || "saved"}]: ${msg}`);
+        showToast(`✔ 已保存版本 [${data.commit_hash}]: ${msg}`);
         input.value = "";
 
-        // If history is currently expanded, refresh history list
+        // If history is open, refresh it immediately
         if (this.isHistoryExpanded) {
           this.loadHistoryList(commitBar, fileName);
         }
       } catch (e) {
-        alert(`Commit 失败: ${e.message}`);
+        alert(`保存版本失败: ${e.message}`);
       } finally {
         commitBtn.disabled = false;
-        commitBtn.textContent = "✔ Commit";
+        commitBtn.textContent = "✔ 保存";
       }
     };
 
@@ -234,8 +234,6 @@ class SidebarGitIntegration {
         doCommit();
       }
     };
-
-    this.updateBranchTag();
   }
 
   async loadHistoryList(commitBar, fileName) {
@@ -245,11 +243,11 @@ class SidebarGitIntegration {
     historyPanel.innerHTML = `<div style="font-size: 11px; color: #64748b; padding: 6px; text-align: center;">正在读取历史版本...</div>`;
 
     try {
-      const res = await fetch(`/workflow-git/history?file=${encodeURIComponent(fileName)}&limit=30`);
+      const res = await fetch(`/workflow-git/history?file=${encodeURIComponent(fileName)}&limit=50`);
       const data = await res.json();
 
       if (!data.success || !data.history.length) {
-        historyPanel.innerHTML = `<div style="font-size: 11px; color: #64748b; padding: 6px; text-align: center;">[${fileName}] 暂无提交历史</div>`;
+        historyPanel.innerHTML = `<div style="font-size: 11px; color: #64748b; padding: 6px; text-align: center;">[${fileName}] 暂无历史版本</div>`;
         return;
       }
 
@@ -261,32 +259,75 @@ class SidebarGitIntegration {
           <div class="wfg-history-node-left">
             <div class="wfg-history-node-msg" title="${commit.message}">${commit.message}</div>
             <div class="wfg-history-node-meta">
-              <span class="wfg-history-node-hash">${commit.short_hash}</span>
-              <span>${commit.date.split(" ")[0]}</span>
+              <span class="wfg-history-node-hash">#${commit.short_hash}</span>
+              <span>${commit.date ? commit.date.split(" ")[0] : ""}</span>
             </div>
           </div>
-          <button class="wfg-history-restore-btn" title="将此版本载入画布">
-            载入
-          </button>
+          <div class="wfg-history-node-actions">
+            <button class="wfg-history-restore-btn" title="将此版本载入当前画布">
+              载入
+            </button>
+            <button class="wfg-history-delete-btn" title="删除此历史版本">
+              🗑️
+            </button>
+          </div>
         `;
 
+        // Restore button: loads graph into CURRENT workflow without opening Unsaved tab
         node.querySelector(".wfg-history-restore-btn").onclick = async (e) => {
           e.stopPropagation();
-          if (!confirm(`确定要将 [${fileName}] 恢复到版本 ${commit.short_hash} ("${commit.message}") 吗？当前画布改动将被覆盖。`)) {
+          if (!confirm(`确定要将 [${fileName}] 恢复到版本 #${commit.short_hash} ("${commit.message}") 吗？当前画布改动将被覆盖。`)) {
             return;
           }
 
           try {
-            const checkoutRes = await fetch(`/workflow-git/checkout?hash=${commit.full_hash}&file=${encodeURIComponent(fileName)}`);
+            const checkoutRes = await fetch(`/workflow-git/checkout?hash=${commit.short_hash}&file=${encodeURIComponent(fileName)}`);
             const checkoutData = await checkoutRes.json();
             if (!checkoutData.success) throw new Error(checkoutData.error);
 
             if (checkoutData.workflow) {
-              app.loadGraphData(checkoutData.workflow);
-              showToast(`✔ 已载入 [${fileName}] (${commit.short_hash})`);
+              // Pass fileName as 4th parameter so ComfyUI reuses active workflow tab!
+              try {
+                await app.loadGraphData(checkoutData.workflow, true, true, fileName);
+              } catch (loadErr) {
+                // Fallback direct configure
+                if (app.graph && typeof app.graph.configure === "function") {
+                  app.graph.configure(checkoutData.workflow);
+                } else {
+                  app.loadGraphData(checkoutData.workflow);
+                }
+              }
+              showToast(`✔ 已载入 [${fileName}] 版本 (#${commit.short_hash})`);
             }
           } catch (err) {
             alert(`载入失败: ${err.message}`);
+          }
+        };
+
+        // Delete button: deletes the specific snapshot
+        node.querySelector(".wfg-history-delete-btn").onclick = async (e) => {
+          e.stopPropagation();
+          if (!confirm(`确定要删除历史版本 #${commit.short_hash} ("${commit.message}") 吗？此操作无法撤销。`)) {
+            return;
+          }
+
+          try {
+            const delRes = await fetch("/workflow-git/delete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                file_name: fileName,
+                hash: commit.short_hash
+              })
+            });
+            const delData = await delRes.json();
+            if (!delData.success) throw new Error(delData.error || "删除失败");
+
+            showToast(`🗑️ 已删除版本 #${commit.short_hash}`);
+            // Refresh history list
+            this.loadHistoryList(commitBar, fileName);
+          } catch (err) {
+            alert(`删除失败: ${err.message}`);
           }
         };
 
@@ -296,29 +337,18 @@ class SidebarGitIntegration {
       historyPanel.innerHTML = `<div style="font-size: 11px; color: #ef4444; padding: 6px; text-align: center;">读取失败: ${e.message}</div>`;
     }
   }
-
-  async updateBranchTag() {
-    try {
-      const res = await fetch("/workflow-git/status");
-      const data = await res.json();
-      if (data.success && data.status?.branch) {
-        const tag = document.querySelector("#wfg-branch-tag");
-        if (tag) tag.textContent = data.status.branch;
-      }
-    } catch (e) {}
-  }
 }
 
 // Register ComfyUI Extension
 app.registerExtension({
-  name: "comfyui.workflow.git",
+  name: "comfyui.workflow.version",
   async setup() {
     injectCSS();
 
     // Start lightweight sidebar integrator
-    new SidebarGitIntegration();
+    new SidebarVersionIntegration();
 
-    // Global shortcut Alt + G focuses commit input
+    // Global shortcut Alt + G focuses version note input
     window.addEventListener("keydown", (e) => {
       if (e.altKey && (e.key === "g" || e.key === "G")) {
         e.preventDefault();
@@ -332,6 +362,6 @@ app.registerExtension({
       }
     });
 
-    console.log("[WorkflowGit] Sidebar Git Integration initialized cleanly!");
+    console.log("[WorkflowVersion] Lightweight Version Integration initialized cleanly!");
   }
 });
