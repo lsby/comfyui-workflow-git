@@ -1,4 +1,5 @@
 import json
+import urllib.parse
 from aiohttp import web
 from pathlib import Path
 from typing import Any
@@ -50,7 +51,7 @@ def register_api_routes(app: web.Application, version_service, config_manager):
             file_name = request.query.get("file", None)
             if file_name:
                 file_name = file_name.strip()
-            limit = int(request.query.get("limit", 50))
+            limit = int(request.query.get("limit", 100))
             history = version_service.get_history(file_name=file_name, limit=limit)
             return web.json_response({"success": True, "history": history})
         except Exception as e:
@@ -95,6 +96,22 @@ def register_api_routes(app: web.Application, version_service, config_manager):
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
+    @routes.post("/workflow-git/rename")
+    async def rename_workflow_endpoint(request):
+        try:
+            version_service.workflows_dir = config_manager.resolve_workflows_dir()
+            version_service.storage_dir = version_service.workflows_dir / ".workflow_versions"
+            data = await request.json()
+            src = data.get("src", "").strip()
+            dst = data.get("dst", "").strip()
+            if not src or not dst:
+                return web.json_response({"success": False, "error": "Missing src or dst parameters"}, status=400)
+
+            ok = version_service.rename_workflow(src, dst)
+            return web.json_response({"success": ok})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
     @routes.get("/workflow-git/config")
     async def get_plugin_config(request):
         try:
@@ -103,5 +120,28 @@ def register_api_routes(app: web.Application, version_service, config_manager):
             return web.json_response({"success": True, "config": cfg, "resolved_path": resolved})
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    # Middleware to automatically intercept ComfyUI native right-click workflow renames
+    @web.middleware
+    async def rename_interceptor_middleware(request, handler):
+        response = await handler(request)
+        if response.status == 200 and request.method == "POST" and "/userdata/" in request.path and "/move/" in request.path:
+            try:
+                src_param = request.match_info.get("file", "")
+                dest_param = request.match_info.get("dest", "")
+                src = urllib.parse.unquote(src_param)
+                dest = urllib.parse.unquote(dest_param)
+                if "workflows" in src and "workflows" in dest:
+                    src_name = Path(src).name
+                    dest_name = Path(dest).name
+                    version_service.workflows_dir = config_manager.resolve_workflows_dir()
+                    version_service.storage_dir = version_service.workflows_dir / ".workflow_versions"
+                    version_service.rename_workflow(src_name, dest_name)
+            except Exception as e:
+                print(f"[WorkflowVersion] Error in rename interceptor: {e}")
+        return response
+
+    if rename_interceptor_middleware not in app.middlewares:
+        app.middlewares.append(rename_interceptor_middleware)
 
     app.add_routes(routes)
