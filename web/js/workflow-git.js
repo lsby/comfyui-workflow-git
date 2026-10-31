@@ -85,13 +85,39 @@ function getCurrentWorkflowName() {
   return lastKnownWorkflowName || "workflow.json";
 }
 
+// Compute semantic graph fingerprint ignoring viewport pan/zoom (ds) and volatile canvas state
+function getGraphFingerprint(graph) {
+  if (!graph || typeof graph !== "object") return "";
+  try {
+    const copy = JSON.parse(JSON.stringify(graph));
+    // Strip canvas viewport offset/scale so zooming/panning doesn't count as dirty
+    if (copy.extra && copy.extra.ds) {
+      delete copy.extra.ds;
+    }
+    if (copy.extra && copy.extra.ue_properties) {
+      delete copy.extra.ue_properties;
+    }
+    // Normalize nodes ordering by ID for deterministic comparison
+    if (Array.isArray(copy.nodes)) {
+      copy.nodes.sort((a, b) => {
+        const idA = typeof a.id === "number" ? a.id : String(a.id || "");
+        const idB = typeof b.id === "number" ? b.id : String(b.id || "");
+        return idA > idB ? 1 : -1;
+      });
+    }
+    return JSON.stringify(copy);
+  } catch (e) {
+    return "";
+  }
+}
+
 class SidebarVersionIntegration {
   constructor() {
     this.isProcessing = false;
     this.isHistoryExpanded = false;
     this.currentWorkflowName = "";
     this.activeVersionHash = "";
-    this.lastCleanSerialized = "";
+    this.lastCleanFingerprint = "";
     this.isDirty = false;
     this.init();
   }
@@ -110,24 +136,26 @@ class SidebarVersionIntegration {
     setTimeout(() => this.safeInject(), 800);
     setTimeout(() => this.safeInject(), 2000);
 
-    // Periodically check for modifications / dirty state every 800ms
+    // Periodically check for semantic modifications every 800ms
     setInterval(() => {
       this.checkDirtyState();
     }, 800);
   }
 
   checkDirtyState() {
-    if (!app.graph) return;
+    if (!app.graph || this.isProcessing) return;
     try {
-      const currentSerialized = JSON.stringify(app.graph.serialize());
-      if (!this.lastCleanSerialized) {
-        this.lastCleanSerialized = currentSerialized;
+      const currentFingerprint = getGraphFingerprint(app.graph.serialize());
+      if (!currentFingerprint) return;
+
+      if (!this.lastCleanFingerprint) {
+        this.lastCleanFingerprint = currentFingerprint;
         this.isDirty = false;
         this.updateDirtyIndicator();
         return;
       }
 
-      const dirty = currentSerialized !== this.lastCleanSerialized;
+      const dirty = currentFingerprint !== this.lastCleanFingerprint;
       if (dirty !== this.isDirty) {
         this.isDirty = dirty;
         this.updateDirtyIndicator();
@@ -149,7 +177,7 @@ class SidebarVersionIntegration {
       if (this.isDirty) {
         dirtyEl.className = "wfg-dirty-pill dirty";
         dirtyEl.innerHTML = `● 已修改`;
-        dirtyEl.title = "当前画布与最新快照不一致，建议保存新版本";
+        dirtyEl.title = "当前画布与快照版本不一致，有改动可提交";
       } else {
         dirtyEl.className = "wfg-dirty-pill clean";
         dirtyEl.innerHTML = `✔ 干净`;
@@ -215,7 +243,7 @@ class SidebarVersionIntegration {
     } catch (e) {}
 
     if (app.graph) {
-      this.lastCleanSerialized = JSON.stringify(app.graph.serialize());
+      this.lastCleanFingerprint = getGraphFingerprint(app.graph.serialize());
     }
     this.isDirty = false;
     this.updateDirtyIndicator();
@@ -335,7 +363,7 @@ class SidebarVersionIntegration {
         if (!data.success) throw new Error(data.error);
 
         this.activeVersionHash = data.commit_hash;
-        this.lastCleanSerialized = JSON.stringify(workflowData);
+        this.lastCleanFingerprint = getGraphFingerprint(workflowData);
         this.isDirty = false;
         this.updateDirtyIndicator();
 
@@ -415,6 +443,7 @@ class SidebarVersionIntegration {
           }
 
           try {
+            this.isProcessing = true;
             const checkoutRes = await fetch(`/workflow-git/checkout?hash=${commit.short_hash}&file=${encodeURIComponent(fileName)}`);
             const checkoutData = await checkoutRes.json();
             if (!checkoutData.success) throw new Error(checkoutData.error);
@@ -431,14 +460,24 @@ class SidebarVersionIntegration {
               }
 
               this.activeVersionHash = commit.short_hash;
-              this.lastCleanSerialized = JSON.stringify(checkoutData.workflow);
-              this.isDirty = false;
-              this.updateDirtyIndicator();
+
+              // Give LiteGraph canvas 350ms to settle node layout, then capture clean baseline
+              setTimeout(() => {
+                if (app.graph) {
+                  this.lastCleanFingerprint = getGraphFingerprint(app.graph.serialize());
+                } else {
+                  this.lastCleanFingerprint = getGraphFingerprint(checkoutData.workflow);
+                }
+                this.isDirty = false;
+                this.isProcessing = false;
+                this.updateDirtyIndicator();
+                this.loadHistoryList(commitBar, fileName);
+              }, 350);
 
               showToast(`✔ 已载入 [${fileName}] 版本 (#${commit.short_hash})`);
-              this.loadHistoryList(commitBar, fileName);
             }
           } catch (err) {
+            this.isProcessing = false;
             alert(`载入失败: ${err.message}`);
           }
         };
