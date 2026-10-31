@@ -8,7 +8,7 @@ function injectCSS() {
   document.head.appendChild(link);
 }
 
-// Toast helper
+// Toast notification helper
 function showToast(message, duration = 3000) {
   let toast = document.querySelector(".workflow-git-toast");
   if (!toast) {
@@ -21,394 +21,309 @@ function showToast(message, duration = 3000) {
   setTimeout(() => toast.classList.remove("active"), duration);
 }
 
-class WorkflowGitUI {
+// Extract current active workflow file name
+function getCurrentWorkflowName() {
+  try {
+    if (document.title) {
+      let title = document.title
+        .replace(/^[*•\s]+/, "")
+        .replace(/\s*-\s*ComfyUI.*$/i, "")
+        .trim();
+      if (title) {
+        title = title.replace(/\s*\(\d+\)$/, "").trim();
+        if (title && title.toLowerCase() !== "comfyui") {
+          return title.endsWith(".json") ? title : `${title}.json`;
+        }
+      }
+    }
+    const tabEl = document.querySelector(".comfyui-workflow-tab.active, [data-testid='workflow-tab-active']");
+    if (tabEl && tabEl.textContent.trim()) {
+      let name = tabEl.textContent.trim().replace(/^[*•\s]+/, "").trim();
+      name = name.replace(/\s*\(\d+\)$/, "").trim();
+      if (name) return name.endsWith(".json") ? name : `${name}.json`;
+    }
+  } catch (e) {}
+  return "workflow.json";
+}
+
+class SidebarGitIntegration {
   constructor() {
-    this.overlay = null;
     this.status = null;
-    this.activeTab = "commit";
-    this.initDOM();
+    this.expandedFiles = new Set();
+    this.observer = null;
+    this.init();
   }
 
-  initDOM() {
-    this.overlay = document.createElement("div");
-    this.overlay.className = "workflow-git-modal-overlay";
-    this.overlay.innerHTML = `
-      <div class="workflow-git-modal">
-        <div class="workflow-git-header">
-          <div class="workflow-git-title">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="18" cy="18" r="3"></circle>
-              <circle cx="6" cy="6" r="3"></circle>
-              <path d="M13 6h3a2 2 0 0 1 2 2v7"></path>
-              <line x1="6" y1="9" x2="6" y2="21"></line>
-            </svg>
-            <span>Workflow Git Version Control</span>
-          </div>
-          <button class="workflow-git-close-btn" id="wfg-close" title="Close (Esc)">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-          </button>
+  init() {
+    // Start observing DOM changes for sidebar opening
+    this.observer = new MutationObserver(() => this.scanAndInject());
+    this.observer.observe(document.body, { childList: true, subtree: true });
+    
+    // Initial scan
+    setTimeout(() => this.scanAndInject(), 500);
+    setTimeout(() => this.scanAndInject(), 1500);
+  }
+
+  async scanAndInject() {
+    // 1. Find the search input inside the native Workflows drawer
+    const searchInputs = Array.from(document.querySelectorAll("input")).filter((input) => {
+      const ph = (input.placeholder || "").toLowerCase();
+      return ph.includes("工作流") || ph.includes("workflow");
+    });
+
+    if (searchInputs.length > 0) {
+      const searchInput = searchInputs[0];
+      this.injectQuickCommitBar(searchInput);
+      this.injectFileBadges();
+    }
+  }
+
+  // Inject the Quick Commit bar under the search input
+  injectQuickCommitBar(searchInput) {
+    if (document.querySelector("#wfg-sidebar-commit-bar")) {
+      // Just update active workflow name
+      const nameEl = document.querySelector("#wfg-current-file-name");
+      if (nameEl) nameEl.textContent = getCurrentWorkflowName();
+      return;
+    }
+
+    const parentContainer = searchInput.closest(".comfyui-sidebar-content, .sidebar-content, [class*='sidebar']") || searchInput.parentElement?.parentElement;
+    if (!parentContainer) return;
+
+    const commitBar = document.createElement("div");
+    commitBar.id = "wfg-sidebar-commit-bar";
+    commitBar.className = "wfg-sidebar-commit-container";
+    const currentName = getCurrentWorkflowName();
+
+    commitBar.innerHTML = `
+      <div class="wfg-sidebar-commit-header">
+        <div class="wfg-sidebar-current-file">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <circle cx="18" cy="18" r="3"></circle>
+            <circle cx="6" cy="6" r="3"></circle>
+            <path d="M13 6h3a2 2 0 0 1 2 2v7"></path>
+            <line x1="6" y1="9" x2="6" y2="21"></line>
+          </svg>
+          <span id="wfg-current-file-name" title="${currentName}">${currentName}</span>
         </div>
-
-        <div class="workflow-git-tabs">
-          <div class="workflow-git-tab active" data-tab="commit">Commit</div>
-          <div class="workflow-git-tab" data-tab="history">History</div>
-          <div class="workflow-git-tab" data-tab="settings">Repository Info</div>
-        </div>
-
-        <div class="workflow-git-body">
-          <!-- Status Banner -->
-          <div class="workflow-git-status-bar" id="wfg-status-bar">
-            <span>Checking Git repository status...</span>
-          </div>
-
-          <!-- Commit Tab -->
-          <div class="workflow-git-panel active" id="wfg-panel-commit">
-            <div class="workflow-git-field">
-              <label class="workflow-git-label">Workflow File Name (.json)</label>
-              <input type="text" id="wfg-filename" class="workflow-git-input" placeholder="e.g. main-flow.json" value="workflow.json" />
-            </div>
-
-            <div class="workflow-git-field">
-              <label class="workflow-git-label">Commit Message</label>
-              <textarea id="wfg-message" class="workflow-git-textarea" placeholder="Describe your workflow changes (e.g. adjusted sampler to dpmpp_2m, added lora)..."></textarea>
-            </div>
-
-            <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
-              <button class="workflow-git-btn workflow-git-btn-secondary" id="wfg-cancel-btn">Cancel</button>
-              <button class="workflow-git-btn workflow-git-btn-primary" id="wfg-commit-btn">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M20 6L9 17l-5-5"></path>
-                </svg>
-                Commit Workflow
-              </button>
-            </div>
-          </div>
-
-          <!-- History Tab -->
-          <div class="workflow-git-panel" id="wfg-panel-history">
-            <div style="display: flex; gap: 10px; margin-bottom: 14px; align-items: center;">
-              <select id="wfg-history-file-select" class="workflow-git-select" style="max-width: 260px;">
-                <option value="">All Workflow Commits</option>
-              </select>
-              <button class="workflow-git-btn workflow-git-btn-secondary workflow-git-btn-sm" id="wfg-refresh-history">
-                Refresh
-              </button>
-            </div>
-            <div class="workflow-git-history-list" id="wfg-history-list">
-              <div style="color: #71717a; text-align: center; padding: 20px;">No commits found yet.</div>
-            </div>
-          </div>
-
-          <!-- Settings Tab -->
-          <div class="workflow-git-panel" id="wfg-panel-settings">
-            <div class="workflow-git-field">
-              <label class="workflow-git-label">Managed Workflows Directory (ComfyUI Native Workflows)</label>
-              <input type="text" id="wfg-config-dir" class="workflow-git-input" readonly style="opacity: 0.8; cursor: not-allowed;" />
-              <div style="font-size: 11px; color: #71717a; margin-top: 4px;" id="wfg-resolved-path"></div>
-            </div>
-
-            <div style="display: flex; justify-content: flex-end; align-items: center; margin-top: 24px;">
-              <button class="workflow-git-btn workflow-git-btn-secondary" id="wfg-init-git-btn">
-                Re-initialize Git
-              </button>
-            </div>
-          </div>
-        </div>
+        <span class="wfg-sidebar-branch-tag" id="wfg-branch-tag">Git</span>
+      </div>
+      <div class="wfg-sidebar-input-row">
+        <input
+          type="text"
+          id="wfg-quick-msg"
+          class="wfg-sidebar-commit-input"
+          placeholder="提交这次修改说明 (Enter 提交)..."
+        />
+        <button id="wfg-quick-commit-btn" class="wfg-sidebar-commit-btn" title="Commit current workflow">
+          ✔ Commit
+        </button>
       </div>
     `;
 
-    document.body.appendChild(this.overlay);
-    this.bindEvents();
-  }
+    // Insert right after search box or its wrapper
+    const anchor = searchInput.closest(".search-container, .input-container, [class*='search']") || searchInput.parentElement;
+    if (anchor && anchor.parentElement) {
+      anchor.parentElement.insertBefore(commitBar, anchor.nextSibling);
+    } else {
+      parentContainer.insertBefore(commitBar, parentContainer.firstChild);
+    }
 
-  bindEvents() {
-    // Close
-    this.overlay.querySelector("#wfg-close").onclick = () => this.hide();
-    this.overlay.querySelector("#wfg-cancel-btn").onclick = () => this.hide();
-    this.overlay.onclick = (e) => {
-      if (e.target === this.overlay) this.hide();
+    // Bind event
+    const input = commitBar.querySelector("#wfg-quick-msg");
+    const btn = commitBar.querySelector("#wfg-quick-commit-btn");
+
+    const doCommit = async () => {
+      const msg = input.value.trim();
+      if (!msg) {
+        input.focus();
+        return;
+      }
+      const fileName = getCurrentWorkflowName();
+      try {
+        btn.disabled = true;
+        btn.textContent = "Committing...";
+
+        const workflowData = app.graph.serialize();
+        const res = await fetch("/workflow-git/commit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            file_name: fileName,
+            message: msg,
+            workflow: workflowData
+          })
+        });
+
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+
+        showToast(`✔ 已提交 [${data.commit_hash || "saved"}]: ${msg}`);
+        input.value = "";
+
+        // Refresh this file's history tree if open
+        this.refreshFileTree(fileName);
+        this.injectFileBadges(true);
+      } catch (e) {
+        alert(`Commit 失败: ${e.message}`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "✔ Commit";
+      }
     };
 
-    // Tabs
-    const tabs = this.overlay.querySelectorAll(".workflow-git-tab");
-    tabs.forEach((tab) => {
-      tab.onclick = () => {
-        tabs.forEach((t) => t.classList.remove("active"));
-        tab.classList.add("active");
-        const tabName = tab.dataset.tab;
-        this.activeTab = tabName;
-        this.overlay.querySelectorAll(".workflow-git-panel").forEach((p) => p.classList.remove("active"));
-        this.overlay.querySelector(`#wfg-panel-${tabName}`).classList.add("active");
-
-        if (tabName === "history") this.loadHistory();
-      };
-    });
-
-    // Commit button
-    this.overlay.querySelector("#wfg-commit-btn").onclick = () => this.handleCommit();
-
-    // History filter & refresh
-    this.overlay.querySelector("#wfg-refresh-history").onclick = () => this.loadHistory();
-    this.overlay.querySelector("#wfg-history-file-select").onchange = () => this.loadHistory();
-
-    // Init git
-    this.overlay.querySelector("#wfg-init-git-btn").onclick = () => this.initGit();
-
-    // ESC key
-    window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && this.overlay.classList.contains("active")) {
-        this.hide();
+    btn.onclick = doCommit;
+    input.onkeydown = (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        doCommit();
       }
-    });
+    };
+
+    // Update branch tag
+    this.updateBranchTag();
   }
 
-  detectCurrentWorkflowName() {
-    try {
-      if (document.title) {
-        let title = document.title
-          .replace(/^[*•\s]+/, "")
-          .replace(/\s*-\s*ComfyUI.*$/i, "")
-          .trim();
-        if (title) {
-          title = title.replace(/\s*\(\d+\)$/, "").trim();
-          if (title && title.toLowerCase() !== "comfyui") {
-            return title.endsWith(".json") ? title : `${title}.json`;
-          }
-        }
-      }
-
-      const tabEl = document.querySelector(".comfyui-workflow-tab.active, [data-testid='workflow-tab-active']");
-      if (tabEl && tabEl.textContent.trim()) {
-        let name = tabEl.textContent.trim().replace(/^[*•\s]+/, "").trim();
-        name = name.replace(/\s*\(\d+\)$/, "").trim();
-        if (name) return name.endsWith(".json") ? name : `${name}.json`;
-      }
-
-      const titleEl = document.querySelector(".comfy-topbar-title, .comfyui-workflow-name");
-      if (titleEl && titleEl.textContent.trim()) {
-        let name = titleEl.textContent.trim().replace(/^[*•\s]+/, "").trim();
-        name = name.replace(/\s*\(\d+\)$/, "").trim();
-        if (name) return name.endsWith(".json") ? name : `${name}.json`;
-      }
-
-      if (app.workflowManager?.activeWorkflow?.name) {
-        let name = app.workflowManager.activeWorkflow.name.replace(/^[*•\s]+/, "").trim();
-        name = name.replace(/\s*\(\d+\)$/, "").trim();
-        if (name) return name.endsWith(".json") ? name : `${name}.json`;
-      }
-    } catch (e) {
-      // Fallback
-    }
-    return "workflow.json";
-  }
-
-  async show() {
-    this.overlay.classList.add("active");
-    const detectedName = this.detectCurrentWorkflowName();
-    const fileNameInput = this.overlay.querySelector("#wfg-filename");
-    if (fileNameInput) {
-      fileNameInput.value = detectedName;
-    }
-    await this.refreshStatus();
-  }
-
-  hide() {
-    this.overlay.classList.remove("active");
-  }
-
-  async refreshStatus() {
-    const statusBar = this.overlay.querySelector("#wfg-status-bar");
+  async updateBranchTag() {
     try {
       const res = await fetch("/workflow-git/status");
       const data = await res.json();
-      if (!data.success) throw new Error(data.error);
-
-      this.status = data.status;
-      const { is_repo, branch, target_dir, files } = data.status;
-
-      // Update status bar
-      if (is_repo) {
-        statusBar.innerHTML = `
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span class="workflow-git-badge ok">● Git Active</span>
-            <span>Branch: <b>${branch}</b></span>
-          </div>
-          <span style="color: #a1a1aa; font-size: 11px;">Path: ${target_dir}</span>
-        `;
-      } else {
-        statusBar.innerHTML = `
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span class="workflow-git-badge warn">▲ Not a Git Repo</span>
-            <span>Folder exists but git is not initialized</span>
-          </div>
-          <button class="workflow-git-btn workflow-git-btn-sm workflow-git-btn-secondary" id="wfg-quick-init">Initialize Git</button>
-        `;
-        const qInit = statusBar.querySelector("#wfg-quick-init");
-        if (qInit) qInit.onclick = () => this.initGit();
+      if (data.success && data.status?.branch) {
+        const tag = document.querySelector("#wfg-branch-tag");
+        if (tag) tag.textContent = data.status.branch;
       }
-
-      // Populate file selects
-      const fileSelect = this.overlay.querySelector("#wfg-history-file-select");
-      const currentSelected = fileSelect.value;
-      fileSelect.innerHTML = '<option value="">All Workflow Commits</option>';
-      files.forEach((f) => {
-        const opt = document.createElement("option");
-        opt.value = f;
-        opt.textContent = f;
-        if (f === currentSelected) opt.selected = true;
-        fileSelect.appendChild(opt);
-      });
-
-      // Settings config
-      this.overlay.querySelector("#wfg-config-dir").value = data.resolved_dir || "";
-      this.overlay.querySelector("#wfg-resolved-path").textContent = `Native ComfyUI workflows location (100% linked with UI)`;
-    } catch (e) {
-      statusBar.innerHTML = `<span style="color: #ef4444;">Error checking status: ${e.message}</span>`;
-    }
+    } catch (e) {}
   }
 
-  async handleCommit() {
-    const fileNameInput = this.overlay.querySelector("#wfg-filename");
-    const msgInput = this.overlay.querySelector("#wfg-message");
-    const btn = this.overlay.querySelector("#wfg-commit-btn");
+  // Scan items in sidebar file list and inject Git Badges
+  injectFileBadges(forceRefresh = false) {
+    // Find all elements that display .json filenames
+    const elements = Array.from(document.querySelectorAll("*")).filter((el) => {
+      if (el.children.length > 2) return false;
+      const text = el.textContent ? el.textContent.trim() : "";
+      return text.endsWith(".json") && text.length < 80;
+    });
 
-    const fileName = fileNameInput.value.trim() || "workflow.json";
-    const message = msgInput.value.trim();
+    elements.forEach((el) => {
+      // Find the row container
+      const row = el.closest("li, [role='treeitem'], [class*='item'], div") || el.parentElement;
+      if (!row || row.dataset.wfgInjected === "true" && !forceRefresh) return;
+      row.dataset.wfgInjected = "true";
 
-    if (!message) {
-      alert("Please enter a commit message!");
-      msgInput.focus();
+      const fileName = el.textContent.trim();
+      const existingBadge = row.querySelector(".wfg-inline-badge");
+      if (existingBadge) return;
+
+      const badge = document.createElement("span");
+      badge.className = "wfg-inline-badge";
+      badge.innerHTML = `🌱 Git`;
+      badge.title = `点击查看 [${fileName}] 的历史版本`;
+
+      // Fetch commit count for this file
+      fetch(`/workflow-git/history?file=${encodeURIComponent(fileName)}&limit=20`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.success && data.history.length > 0) {
+            badge.innerHTML = `🌱 ${data.history.length}`;
+            badge.dataset.count = data.history.length;
+          }
+        })
+        .catch(() => {});
+
+      badge.onclick = (e) => {
+        e.stopPropagation();
+        this.toggleFileHistory(row, fileName, badge);
+      };
+
+      // Append badge to row
+      row.style.display = "flex";
+      row.style.alignItems = "center";
+      row.appendChild(badge);
+    });
+  }
+
+  // Toggle inline history accordion under file item
+  async toggleFileHistory(row, fileName, badge) {
+    const nextEl = row.nextElementSibling;
+    if (nextEl && nextEl.classList.contains("wfg-inline-history-tree")) {
+      // Collapse
+      nextEl.remove();
+      badge.classList.remove("expanded");
+      this.expandedFiles.delete(fileName);
       return;
     }
 
-    try {
-      btn.disabled = true;
-      btn.textContent = "Committing...";
+    badge.classList.add("expanded");
+    this.expandedFiles.add(fileName);
 
-      const workflowData = app.graph.serialize();
-
-      const res = await fetch("/workflow-git/commit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          file_name: fileName,
-          message: message,
-          workflow: workflowData
-        })
-      });
-
-      const result = await res.json();
-      if (!result.success) throw new Error(result.error);
-
-      showToast(`✔ Committed [${result.commit_hash || "saved"}]: ${message}`);
-      msgInput.value = "";
-      this.hide();
-    } catch (e) {
-      alert(`Commit failed: ${e.message}`);
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = `
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M20 6L9 17l-5-5"></path>
-        </svg>
-        Commit Workflow
-      `;
-    }
-  }
-
-  async loadHistory() {
-    const listEl = this.overlay.querySelector("#wfg-history-list");
-    const file = this.overlay.querySelector("#wfg-history-file-select").value;
-
-    listEl.innerHTML = '<div style="color: #71717a; text-align: center; padding: 20px;">Loading history...</div>';
+    const treeContainer = document.createElement("div");
+    treeContainer.className = "wfg-inline-history-tree";
+    treeContainer.innerHTML = `<div style="font-size: 10px; color: #64748b; padding: 4px;">正在读取历史版本...</div>`;
+    row.parentElement.insertBefore(treeContainer, row.nextSibling);
 
     try {
-      const url = file ? `/workflow-git/history?file=${encodeURIComponent(file)}` : "/workflow-git/history";
-      const res = await fetch(url);
+      const res = await fetch(`/workflow-git/history?file=${encodeURIComponent(fileName)}&limit=30`);
       const data = await res.json();
 
       if (!data.success || !data.history.length) {
-        listEl.innerHTML = '<div style="color: #71717a; text-align: center; padding: 20px;">No commit history found.</div>';
+        treeContainer.innerHTML = `<div style="font-size: 10px; color: #64748b; padding: 4px;">暂无提交历史</div>`;
         return;
       }
 
-      listEl.innerHTML = "";
-      data.history.forEach((item) => {
-        const card = document.createElement("div");
-        card.className = "workflow-git-commit-card";
-        const primaryFile = item.primary_file || (item.files && item.files[0]) || "";
-        const fileTag = primaryFile
-          ? `<span style="background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); padding: 1px 6px; border-radius: 4px;">📄 ${primaryFile}</span>`
-          : "";
-
-        card.innerHTML = `
-          <div class="workflow-git-commit-info">
-            <div class="workflow-git-commit-msg" style="display: flex; align-items: center; gap: 8px;">
-              <span>${item.message}</span>
-              ${fileTag}
-            </div>
-            <div class="workflow-git-commit-meta">
-              <span class="workflow-git-hash">${item.short_hash}</span>
-              <span>${item.date}</span>
-              <span>by ${item.author}</span>
+      treeContainer.innerHTML = "";
+      data.history.forEach((commit) => {
+        const node = document.createElement("div");
+        node.className = "wfg-history-node";
+        node.innerHTML = `
+          <div class="wfg-history-node-left">
+            <div class="wfg-history-node-msg" title="${commit.message}">${commit.message}</div>
+            <div class="wfg-history-node-meta">
+              <span class="wfg-history-node-hash">${commit.short_hash}</span>
+              <span>${commit.date.split(" ")[0]}</span>
             </div>
           </div>
-          <div style="display: flex; gap: 8px;">
-            <button class="workflow-git-btn workflow-git-btn-sm workflow-git-btn-secondary wfg-restore-btn" data-hash="${item.full_hash}" data-file="${primaryFile}">
-              Restore
-            </button>
-          </div>
+          <button class="wfg-history-restore-btn" title="将此版本载入画布">
+            载入
+          </button>
         `;
 
-        card.querySelector(".wfg-restore-btn").onclick = () => {
-          this.restoreCommit(item.full_hash, primaryFile, item.short_hash, item.message);
+        node.querySelector(".wfg-history-restore-btn").onclick = async (e) => {
+          e.stopPropagation();
+          if (!confirm(`确定要将 [${fileName}] 恢复到版本 ${commit.short_hash} ("${commit.message}") 吗？当前画布改动将被覆盖。`)) {
+            return;
+          }
+
+          try {
+            const checkoutRes = await fetch(`/workflow-git/checkout?hash=${commit.full_hash}&file=${encodeURIComponent(fileName)}`);
+            const checkoutData = await checkoutRes.json();
+            if (!checkoutData.success) throw new Error(checkoutData.error);
+
+            if (checkoutData.workflow) {
+              app.loadGraphData(checkoutData.workflow);
+              showToast(`✔ 已载入 [${fileName}] (${commit.short_hash})`);
+            }
+          } catch (err) {
+            alert(`载入失败: ${err.message}`);
+          }
         };
-        listEl.appendChild(card);
+
+        treeContainer.appendChild(node);
       });
     } catch (e) {
-      listEl.innerHTML = `<div style="color: #ef4444; padding: 10px;">Failed to load history: ${e.message}</div>`;
+      treeContainer.innerHTML = `<div style="font-size: 10px; color: #ef4444; padding: 4px;">读取失败: ${e.message}</div>`;
     }
   }
 
-  async restoreCommit(commitHash, targetFile, shortHash = "", commitMsg = "") {
-    const fileLabel = targetFile || "workflow";
-    const msgLabel = commitMsg ? ` "${commitMsg}"` : "";
-    const hashLabel = shortHash || commitHash.substring(0, 7);
-
-    if (!confirm(`Are you sure you want to restore [${fileLabel}]${msgLabel} (${hashLabel}) onto the canvas? Current unsaved changes will be overwritten.`)) {
-      return;
-    }
-
-    try {
-      const paramFile = targetFile ? encodeURIComponent(targetFile) : "";
-      const res = await fetch(`/workflow-git/checkout?hash=${commitHash}&file=${paramFile}`);
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
-
-      if (data.workflow) {
-        app.loadGraphData(data.workflow);
-        showToast(`✔ Restored [${data.file || fileLabel}] from commit ${hashLabel}`);
-        this.hide();
-      } else {
-        throw new Error("No workflow data found in commit content");
-      }
-    } catch (e) {
-      alert(`Failed to restore: ${e.message}`);
-    }
-  }
-
-  async initGit() {
-    try {
-      const res = await fetch("/workflow-git/init", { method: "POST" });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
-      showToast("✔ Git repository initialized!");
-      await this.refreshStatus();
-    } catch (e) {
-      alert(`Init failed: ${e.message}`);
+  refreshFileTree(fileName) {
+    if (this.expandedFiles.has(fileName)) {
+      const elements = Array.from(document.querySelectorAll(".wfg-inline-badge.expanded"));
+      elements.forEach((b) => {
+        const row = b.parentElement;
+        if (row && row.textContent.includes(fileName)) {
+          this.toggleFileHistory(row, fileName, b);
+          this.toggleFileHistory(row, fileName, b);
+        }
+      });
     }
   }
 }
@@ -418,173 +333,24 @@ app.registerExtension({
   name: "comfyui.workflow.git",
   async setup() {
     injectCSS();
-    const gitUI = new WorkflowGitUI();
 
-    // 1. Modern TopBar Integration (v1.x)
-    const injectTopBarButton = async () => {
-      if (document.querySelector("#wfg-menu-btn")) return true;
+    // Initialize native Sidebar integration
+    new SidebarGitIntegration();
 
-      try {
-        const buttonMod = await import("../../scripts/ui/components/button.js");
-        const ComfyButton = buttonMod.ComfyButton;
-        if (ComfyButton) {
-          const btn = new ComfyButton({
-            action: () => gitUI.show(),
-            tooltip: "Workflow Git Version Control (Alt + G)",
-            content: "🌱 Git",
-            classList: "comfyui-button comfyui-menu-mobile-collapse primary"
-          });
-          btn.element.id = "wfg-menu-btn";
-
-          if (app.menu?.settingsGroup?.element) {
-            app.menu.settingsGroup.element.before(btn.element);
-            return true;
-          } else if (app.menu?.element) {
-            app.menu.element.appendChild(btn.element);
-            return true;
-          }
-        }
-      } catch (e) {
-        // Fallback to DOM injection
-      }
-
-      const managerBtn = Array.from(document.querySelectorAll("button")).find(
-        (b) => b.textContent && b.textContent.includes("Manager")
-      );
-      if (managerBtn && managerBtn.parentElement) {
-        const btn = document.createElement("button");
-        btn.id = "wfg-menu-btn";
-        btn.className = "comfyui-button primary";
-        btn.innerHTML = `<span style="margin-right: 4px;">🌱</span>Git`;
-        btn.title = "Workflow Git Version Control (Alt + G)";
-        btn.style.background = "#0284c7";
-        btn.style.color = "#ffffff";
-        btn.style.fontWeight = "bold";
-        btn.style.margin = "0 4px";
-        btn.onclick = () => gitUI.show();
-        managerBtn.parentElement.insertBefore(btn, managerBtn);
-        return true;
-      }
-
-      return false;
-    };
-
-    // 2. Draggable Floating Action Button with position persistence
-    const injectFloatingButton = () => {
-      if (document.querySelector("#wfg-float-btn")) return;
-      const floatBtn = document.createElement("div");
-      floatBtn.id = "wfg-float-btn";
-      floatBtn.className = "workflow-git-float-btn";
-      floatBtn.innerHTML = `
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <circle cx="18" cy="18" r="3"></circle>
-          <circle cx="6" cy="6" r="3"></circle>
-          <path d="M13 6h3a2 2 0 0 1 2 2v7"></path>
-          <line x1="6" y1="9" x2="6" y2="21"></line>
-        </svg>
-        <span>Git (Alt+G)</span>
-      `;
-      floatBtn.title = "Drag to reposition | Click to open (Alt + G)";
-
-      const savedPos = localStorage.getItem("comfyui-workflow-git-pos");
-      if (savedPos) {
-        try {
-          const { left, top } = JSON.parse(savedPos);
-          const maxLeft = window.innerWidth - 120;
-          const maxTop = window.innerHeight - 50;
-          floatBtn.style.left = `${Math.min(Math.max(10, left), maxLeft)}px`;
-          floatBtn.style.top = `${Math.min(Math.max(10, top), maxTop)}px`;
-          floatBtn.style.right = "auto";
-          floatBtn.style.bottom = "auto";
-        } catch (e) {}
-      }
-
-      let isDragging = false;
-      let hasMoved = false;
-      let startX = 0, startY = 0;
-      let initialLeft = 0, initialTop = 0;
-
-      floatBtn.addEventListener("mousedown", (e) => {
-        if (e.button !== 0) return;
-        isDragging = true;
-        hasMoved = false;
-        startX = e.clientX;
-        startY = e.clientY;
-
-        const rect = floatBtn.getBoundingClientRect();
-        initialLeft = rect.left;
-        initialTop = rect.top;
-
-        floatBtn.style.transition = "none";
-        e.preventDefault();
-      });
-
-      window.addEventListener("mousemove", (e) => {
-        if (!isDragging) return;
-        const dx = e.clientX - startX;
-        const dy = e.clientY - startY;
-
-        if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
-          hasMoved = true;
-        }
-
-        let newLeft = initialLeft + dx;
-        let newTop = initialTop + dy;
-
-        const maxLeft = window.innerWidth - floatBtn.offsetWidth - 10;
-        const maxTop = window.innerHeight - floatBtn.offsetHeight - 10;
-        newLeft = Math.max(10, Math.min(newLeft, maxLeft));
-        newTop = Math.max(10, Math.min(newTop, maxTop));
-
-        floatBtn.style.left = `${newLeft}px`;
-        floatBtn.style.top = `${newTop}px`;
-        floatBtn.style.right = "auto";
-        floatBtn.style.bottom = "auto";
-      });
-
-      window.addEventListener("mouseup", () => {
-        if (!isDragging) return;
-        isDragging = false;
-        floatBtn.style.transition = "background 0.15s, box-shadow 0.15s";
-
-        if (hasMoved) {
-          const rect = floatBtn.getBoundingClientRect();
-          localStorage.setItem(
-            "comfyui-workflow-git-pos",
-            JSON.stringify({ left: rect.left, top: rect.top })
-          );
-        }
-      });
-
-      floatBtn.addEventListener("click", () => {
-        if (hasMoved) {
-          hasMoved = false;
-          return;
-        }
-        gitUI.show();
-      });
-
-      document.body.appendChild(floatBtn);
-    };
-
-    const tryInject = async () => {
-      await injectTopBarButton();
-      injectFloatingButton();
-    };
-
-    tryInject();
-    setTimeout(tryInject, 500);
-    setTimeout(tryInject, 1500);
-    setTimeout(tryInject, 3000);
-
-    // 3. Global shortcut Alt + G
+    // Global shortcut Alt + G focuses the commit input
     window.addEventListener("keydown", (e) => {
       if (e.altKey && (e.key === "g" || e.key === "G")) {
         e.preventDefault();
-        gitUI.show();
+        const input = document.querySelector("#wfg-quick-msg");
+        if (input) {
+          input.focus();
+          input.select();
+        } else {
+          showToast("请先点击左侧【工作流】抽屉打开面板~");
+        }
       }
     });
 
-    console.log("[WorkflowGit] Extension loaded successfully! Use Alt + G or click '🌱 Git' button.");
+    console.log("[WorkflowGit] Native Sidebar Git Integration loaded successfully!");
   }
 });
