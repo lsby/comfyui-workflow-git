@@ -314,10 +314,10 @@
   opacity: 1;
 }
 
-/* Floating Quick Button */
+/* Floating Quick Button (Draggable) */
 .workflow-git-float-btn {
   position: fixed;
-  bottom: 24px;
+  bottom: 80px; /* Elevated to avoid bottom toolbar */
   right: 24px;
   background: #0284c7;
   color: #ffffff;
@@ -329,15 +329,18 @@
   align-items: center;
   gap: 6px;
   box-shadow: 0 4px 15px rgba(2, 132, 199, 0.4);
-  cursor: pointer;
+  cursor: grab;
   z-index: 9999;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  transition: all 0.2s ease;
+  border: 1px solid rgba(255, 255, 255, 0.25);
   user-select: none;
+  touch-action: none;
 }
 
 .workflow-git-float-btn:hover {
   background: #0369a1;
-  transform: translateY(-2px);
   box-shadow: 0 6px 20px rgba(2, 132, 199, 0.6);
+}
+
+.workflow-git-float-btn:active {
+  cursor: grabbing;
 }

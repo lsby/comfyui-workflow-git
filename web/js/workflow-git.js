@@ -172,23 +172,19 @@ class WorkflowGitUI {
   }
 
   detectCurrentWorkflowName() {
-    // Try to auto-detect current workflow name from ComfyUI
     try {
-      // Modern TopBar workflow tab or title
       const tabEl = document.querySelector(".comfyui-workflow-tab.active, [data-testid='workflow-tab-active']");
       if (tabEl && tabEl.textContent.trim()) {
         let name = tabEl.textContent.trim().replace(/^\*/, "").trim();
         if (name) return name.endsWith(".json") ? name : `${name}.json`;
       }
 
-      // Check title bar in header
       const titleEl = document.querySelector(".comfy-topbar-title, .comfyui-workflow-name");
       if (titleEl && titleEl.textContent.trim()) {
         let name = titleEl.textContent.trim().replace(/^\*/, "").trim();
         if (name) return name.endsWith(".json") ? name : `${name}.json`;
       }
 
-      // Check app workflow manager
       if (app.workflowManager?.activeWorkflow?.name) {
         let name = app.workflowManager.activeWorkflow.name.replace(/^\*/, "").trim();
         if (name) return name.endsWith(".json") ? name : `${name}.json`;
@@ -201,7 +197,6 @@ class WorkflowGitUI {
 
   async show() {
     this.overlay.classList.add("active");
-    // Auto populate detected workflow name
     const detectedName = this.detectCurrentWorkflowName();
     const fileNameInput = this.overlay.querySelector("#wfg-filename");
     if (fileNameInput && (!fileNameInput.value || fileNameInput.value === "workflow.json")) {
@@ -281,7 +276,6 @@ class WorkflowGitUI {
       btn.disabled = true;
       btn.textContent = "Committing...";
 
-      // Get current workflow graph from ComfyUI
       const workflowData = app.graph.serialize();
 
       const res = await fetch("/workflow-git/commit", {
@@ -373,7 +367,6 @@ class WorkflowGitUI {
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
 
-      // Load graph onto canvas
       app.loadGraphData(data.workflow);
       showToast(`✔ Restored workflow from commit ${commitHash.substring(0, 7)}`);
       this.hide();
@@ -466,24 +459,10 @@ app.registerExtension({
         return true;
       }
 
-      // Fallback for classic .comfy-menu
-      const menu = document.querySelector(".comfy-menu") || app.ui?.menuContainer;
-      if (menu) {
-        const btn = document.createElement("button");
-        btn.id = "wfg-menu-btn";
-        btn.textContent = "Git Commit";
-        btn.title = "Workflow Git (Alt + G)";
-        btn.style.background = "#0284c7";
-        btn.style.color = "#ffffff";
-        btn.onclick = () => gitUI.show();
-        menu.appendChild(btn);
-        return true;
-      }
-
       return false;
     };
 
-    // 2. Always create a floating action button on screen edge (Triple insurance!)
+    // 2. Draggable Floating Action Button with position persistence
     const injectFloatingButton = () => {
       if (document.querySelector("#wfg-float-btn")) return;
       const floatBtn = document.createElement("div");
@@ -498,8 +477,88 @@ app.registerExtension({
         </svg>
         <span>Git (Alt+G)</span>
       `;
-      floatBtn.title = "Open Workflow Git Version Control (Alt + G)";
-      floatBtn.onclick = () => gitUI.show();
+      floatBtn.title = "Drag to reposition | Click to open (Alt + G)";
+
+      // Restore saved position if available
+      const savedPos = localStorage.getItem("comfyui-workflow-git-pos");
+      if (savedPos) {
+        try {
+          const { left, top } = JSON.parse(savedPos);
+          const maxLeft = window.innerWidth - 120;
+          const maxTop = window.innerHeight - 50;
+          floatBtn.style.left = `${Math.min(Math.max(10, left), maxLeft)}px`;
+          floatBtn.style.top = `${Math.min(Math.max(10, top), maxTop)}px`;
+          floatBtn.style.right = "auto";
+          floatBtn.style.bottom = "auto";
+        } catch (e) {}
+      }
+
+      // Drag implementation
+      let isDragging = false;
+      let hasMoved = false;
+      let startX = 0, startY = 0;
+      let initialLeft = 0, initialTop = 0;
+
+      floatBtn.addEventListener("mousedown", (e) => {
+        if (e.button !== 0) return;
+        isDragging = true;
+        hasMoved = false;
+        startX = e.clientX;
+        startY = e.clientY;
+
+        const rect = floatBtn.getBoundingClientRect();
+        initialLeft = rect.left;
+        initialTop = rect.top;
+
+        floatBtn.style.transition = "none";
+        e.preventDefault();
+      });
+
+      window.addEventListener("mousemove", (e) => {
+        if (!isDragging) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+
+        if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+          hasMoved = true;
+        }
+
+        let newLeft = initialLeft + dx;
+        let newTop = initialTop + dy;
+
+        const maxLeft = window.innerWidth - floatBtn.offsetWidth - 10;
+        const maxTop = window.innerHeight - floatBtn.offsetHeight - 10;
+        newLeft = Math.max(10, Math.min(newLeft, maxLeft));
+        newTop = Math.max(10, Math.min(newTop, maxTop));
+
+        floatBtn.style.left = `${newLeft}px`;
+        floatBtn.style.top = `${newTop}px`;
+        floatBtn.style.right = "auto";
+        floatBtn.style.bottom = "auto";
+      });
+
+      window.addEventListener("mouseup", () => {
+        if (!isDragging) return;
+        isDragging = false;
+        floatBtn.style.transition = "background 0.15s, box-shadow 0.15s";
+
+        if (hasMoved) {
+          const rect = floatBtn.getBoundingClientRect();
+          localStorage.setItem(
+            "comfyui-workflow-git-pos",
+            JSON.stringify({ left: rect.left, top: rect.top })
+          );
+        }
+      });
+
+      floatBtn.addEventListener("click", () => {
+        if (hasMoved) {
+          hasMoved = false;
+          return;
+        }
+        gitUI.show();
+      });
+
       document.body.appendChild(floatBtn);
     };
 
