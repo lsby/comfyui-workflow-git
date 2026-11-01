@@ -661,26 +661,42 @@ async function commitActiveWorkflow(message) {
   }
 
   const msg = (message || "").trim() || "版本更新";
+  const payload = {
+    filename: currentActiveWorkflow,
+    file_name: currentActiveWorkflow,
+    message: msg,
+    data: cleanGraph,
+    workflow: cleanGraph
+  };
+
+  console.log("[WorkflowGit] 提交版本请求:", {
+    workflow: currentActiveWorkflow,
+    message: msg,
+    nodeCount: cleanGraph.nodes ? cleanGraph.nodes.length : 0
+  });
+
   try {
     const resp = await fetch("/workflow-git/commit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        filename: currentActiveWorkflow,
-        message: msg,
-        data: cleanGraph
-      })
+      body: JSON.stringify(payload)
     });
     const result = await resp.json();
+    console.log("[WorkflowGit] 提交结果响应:", result);
+
     if (result.success) {
-      const commitHash = result.short_hash || result.hash || result.id || "";
+      const commitHash = result.short_hash || result.commit_hash || result.hash || result.id || "";
       showToast(`已保存版本: #${commitHash.slice(0, 7)}`);
       setCleanBaseline(cleanGraph);
       await fetchHistory(currentActiveWorkflow);
+      updateActiveCardUI();
+      performDirtyCheck();
+      renderTree();
     } else {
       alert(result.error || "保存失败");
     }
   } catch (e) {
+    console.error("[WorkflowGit] 保存失败异常:", e);
     showToast(`保存失败: ${e.message}`);
   }
 }
@@ -776,13 +792,18 @@ async function deleteVersion(hash) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         filename: currentActiveWorkflow,
-        hash: hash
+        file_name: currentActiveWorkflow,
+        file: currentActiveWorkflow,
+        hash: hash,
+        id: hash
       })
     });
     const result = await resp.json();
     if (result.success) {
       showToast(`已删除版本: #${hash.slice(0, 7)}`);
       await fetchHistory(currentActiveWorkflow);
+      updateActiveCardUI();
+      performDirtyCheck();
     } else {
       alert(result.error || "删除版本失败");
     }
