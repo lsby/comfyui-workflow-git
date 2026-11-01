@@ -262,10 +262,86 @@ async function fetchHistory(filename) {
   updateHistoryUI();
 }
 
+// Helper to locate ComfyUI's internal Pinia workflow store
+function findWorkflowStore() {
+  try {
+    const vueEl = document.getElementById("vue-app") || document.querySelector("#vue-app") || document.querySelector(".comfy-vue-root");
+    const pinia = vueEl?.__vue_app__?.config?.globalProperties?.$pinia 
+      || vueEl?.__vueParentComponent?.appContext?.config?.globalProperties?.$pinia
+      || window.$pinia
+      || window.pinia;
+
+    if (pinia?._s) {
+      return pinia._s.get("workflow") || pinia._s.get("workspace")?.workflow || null;
+    }
+
+    const allEls = document.querySelectorAll("[data-v-app], #vue-app, .comfyui-app, body *");
+    for (const el of allEls) {
+      const p = el.__vue_app__?.config?.globalProperties?.$pinia || el.__vueParentComponent?.appContext?.config?.globalProperties?.$pinia;
+      if (p?._s) {
+        return p._s.get("workflow") || p._s.get("workspace")?.workflow || null;
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
+// Guard against ComfyUI's internal bug where activeWorkflow.changeTracker is null,
+// which causes beforeLoadNewGraph to throw: "Cannot read properties of null (reading 'store')"
+function guardActiveWorkflow() {
+  try {
+    const wfStore = findWorkflowStore();
+    if (wfStore) {
+      const activeWf = wfStore.activeWorkflow;
+      if (activeWf && (!activeWf.changeTracker || typeof activeWf.changeTracker.store !== "function")) {
+        activeWf.changeTracker = {
+          store: () => {},
+          restore: () => {},
+          reset: () => {},
+          checkState: () => {},
+          activeState: null
+        };
+      }
+      if (Array.isArray(wfStore.openWorkflows)) {
+        for (const wf of wfStore.openWorkflows) {
+          if (wf && (!wf.changeTracker || typeof wf.changeTracker.store !== "function")) {
+            wf.changeTracker = {
+              store: () => {},
+              restore: () => {},
+              reset: () => {},
+              checkState: () => {},
+              activeState: null
+            };
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[WorkflowGit] Error guarding active workflow:", e);
+  }
+}
+
+// Intercept app.loadGraphData to permanently prevent ComfyUI null changeTracker crash
+const originalLoadGraphData = app.loadGraphData;
+app.loadGraphData = async function (...args) {
+  guardActiveWorkflow();
+  try {
+    return await originalLoadGraphData.apply(this, args);
+  } catch (err) {
+    if (err && err.message && err.message.includes("reading 'store'")) {
+      console.warn("[WorkflowGit] Intercepted null changeTracker crash, patching and retrying...", err);
+      guardActiveWorkflow();
+      return await originalLoadGraphData.apply(this, args);
+    }
+    throw err;
+  }
+};
+
 // Open / Load workflow into ComfyUI canvas
 async function openWorkflow(relPath, force = false) {
   try {
-    const wfStore = app.extensionManager?.workflow;
+    guardActiveWorkflow();
+    const wfStore = findWorkflowStore();
     const fullPath = "workflows/" + relPath;
 
     // 1. If it's already the active workflow and not forcing reload, just ensure active tab is focused and return
@@ -284,8 +360,20 @@ async function openWorkflow(relPath, force = false) {
     // 2. Look up the workflow item in ComfyUI store
     let item = wfStore?.getWorkflowByPath?.(fullPath);
     if (!item && wfStore?.syncWorkflows) {
-      await wfStore.syncWorkflows();
+      await wfStore.syncWorkflows().catch(() => {});
       item = wfStore.getWorkflowByPath?.(fullPath);
+    }
+    if (item && typeof item.load === "function" && !item.isLoaded) {
+      await item.load().catch(() => {});
+    }
+    if (item && (!item.changeTracker || typeof item.changeTracker.store !== "function")) {
+      item.changeTracker = {
+        store: () => {},
+        restore: () => {},
+        reset: () => {},
+        checkState: () => {},
+        activeState: null
+      };
     }
 
     // 3. Load the workflow content
@@ -307,6 +395,8 @@ async function openWorkflow(relPath, force = false) {
         } catch (e) {}
       }
     }
+
+    guardActiveWorkflow();
 
     // 5. Load graph data passing the workflow instance (or relPath) as 4th arg
     // This tells ComfyUI this is an existing workflow so it NEVER spawns "Unsaved Workflow"
@@ -599,6 +689,7 @@ async function commitActiveWorkflow(message) {
 async function restoreVersion(hash) {
   if (!currentActiveWorkflow) return;
   try {
+    guardActiveWorkflow();
     const url = `/workflow-git/checkout?hash=${encodeURIComponent(hash)}&filename=${encodeURIComponent(currentActiveWorkflow)}`;
     const resp = await fetch(url);
     if (!resp.ok) {
@@ -608,9 +699,22 @@ async function restoreVersion(hash) {
     const result = await resp.json();
     const graphData = result.data || result.workflow;
     if (result.success && graphData) {
-      const wfStore = app.extensionManager?.workflow;
+      const wfStore = findWorkflowStore();
       const fullPath = "workflows/" + currentActiveWorkflow;
       const item = wfStore?.getWorkflowByPath?.(fullPath);
+      if (item && typeof item.load === "function" && !item.isLoaded) {
+        await item.load().catch(() => {});
+      }
+      if (item && (!item.changeTracker || typeof item.changeTracker.store !== "function")) {
+        item.changeTracker = {
+          store: () => {},
+          restore: () => {},
+          reset: () => {},
+          checkState: () => {},
+          activeState: null
+        };
+      }
+      guardActiveWorkflow();
       await app.loadGraphData(graphData, true, true, item || currentActiveWorkflow);
       if (wfStore?.activeWorkflow) {
         wfStore.activeWorkflow.isModified = false;
@@ -1114,16 +1218,22 @@ function unmountWorkflowGitPanel() {
 // Track active workflow from ComfyUI
 function syncActiveWorkflowFromComfy() {
   try {
-    const wfStore = app.extensionManager?.workflow;
-    const activeKey = wfStore?.activeWorkflow?.key;
-    if (activeKey && activeKey !== currentActiveWorkflow) {
-      currentActiveWorkflow = activeKey;
-      setCleanBaseline(getNormalizedGraphData());
-      fetchHistory(currentActiveWorkflow).then(() => {
+    const wfStore = findWorkflowStore();
+    const rawKey = wfStore?.activeWorkflow?.key || wfStore?.activeWorkflow?.path;
+    if (rawKey) {
+      let relKey = rawKey.replace(/\\/g, "/").replace(/^\/+/, "");
+      if (relKey.toLowerCase().startsWith("workflows/")) {
+        relKey = relKey.slice(10);
+      }
+      if (relKey && relKey !== currentActiveWorkflow) {
+        currentActiveWorkflow = relKey;
+        setCleanBaseline(getNormalizedGraphData());
+        fetchHistory(currentActiveWorkflow).then(() => {
+          try { updateActiveCardUI(); } catch (e) {}
+        });
         try { updateActiveCardUI(); } catch (e) {}
-      });
-      try { updateActiveCardUI(); } catch (e) {}
-      try { renderTree(); } catch (e) {}
+        try { renderTree(); } catch (e) {}
+      }
     }
   } catch (e) {}
 }
