@@ -69,12 +69,30 @@ class VersionService:
         if not norm_rel.lower().endswith(".json"):
             norm_rel = f"{norm_rel}.json"
 
-        # Ensure workflow JSON contains a valid version for ComfyUI schema validation
+        # Ensure workflow JSON contains a valid version and extra.ds schema for ComfyUI
         try:
             parsed_data = json.loads(workflow_json_str)
-            if isinstance(parsed_data, dict) and "version" not in parsed_data:
-                parsed_data["version"] = 0.4
-                workflow_json_str = json.dumps(parsed_data, indent=2, ensure_ascii=False)
+            if isinstance(parsed_data, dict):
+                modified = False
+                if "version" not in parsed_data:
+                    parsed_data["version"] = 0.4
+                    modified = True
+                if "extra" not in parsed_data or not isinstance(parsed_data["extra"], dict):
+                    parsed_data["extra"] = {}
+                    modified = True
+                if "ds" not in parsed_data["extra"] or not isinstance(parsed_data["extra"]["ds"], dict):
+                    parsed_data["extra"]["ds"] = {"scale": 1.0, "offset": [0.0, 0.0]}
+                    modified = True
+                else:
+                    ds = parsed_data["extra"]["ds"]
+                    if not isinstance(ds.get("scale"), (int, float)):
+                        ds["scale"] = 1.0
+                        modified = True
+                    if not isinstance(ds.get("offset"), list) or len(ds.get("offset", [])) < 2:
+                        ds["offset"] = [0.0, 0.0]
+                        modified = True
+                if modified:
+                    workflow_json_str = json.dumps(parsed_data, indent=2, ensure_ascii=False)
         except Exception:
             pass
 
@@ -403,6 +421,33 @@ class VersionService:
 
         with open(snapshot_path, "r", encoding="utf-8") as f:
             content = f.read()
+
+        # Sanitize workflow content before returning and syncing to disk
+        try:
+            parsed_data = json.loads(content)
+            if isinstance(parsed_data, dict):
+                modified = False
+                if "version" not in parsed_data:
+                    parsed_data["version"] = 0.4
+                    modified = True
+                if "extra" not in parsed_data or not isinstance(parsed_data["extra"], dict):
+                    parsed_data["extra"] = {}
+                    modified = True
+                if "ds" not in parsed_data["extra"] or not isinstance(parsed_data["extra"]["ds"], dict):
+                    parsed_data["extra"]["ds"] = {"scale": 1.0, "offset": [0.0, 0.0]}
+                    modified = True
+                else:
+                    ds = parsed_data["extra"]["ds"]
+                    if not isinstance(ds.get("scale"), (int, float)):
+                        ds["scale"] = 1.0
+                        modified = True
+                    if not isinstance(ds.get("offset"), list) or len(ds.get("offset", [])) < 2:
+                        ds["offset"] = [0.0, 0.0]
+                        modified = True
+                if modified:
+                    content = json.dumps(parsed_data, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
 
         # Sync back to active file on disk
         try:

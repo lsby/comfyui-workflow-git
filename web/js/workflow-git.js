@@ -105,6 +105,33 @@ function getNormalizedGraphData() {
   }
 }
 
+// Graph data formatted and validated for saving to disk / versioning
+function getGraphDataForSave() {
+  try {
+    if (!app.graph) return null;
+    const raw = app.graph.serialize();
+    if (!raw) return null;
+    const data = JSON.parse(JSON.stringify(raw));
+    if (data.version === undefined) {
+      data.version = 0.4;
+    }
+    if (!data.extra) {
+      data.extra = {};
+    }
+    if (!data.extra.ds) {
+      data.extra.ds = { scale: 1.0, offset: [0.0, 0.0] };
+    } else {
+      if (typeof data.extra.ds.scale !== "number") data.extra.ds.scale = 1.0;
+      if (!Array.isArray(data.extra.ds.offset) || data.extra.ds.offset.length < 2) {
+        data.extra.ds.offset = [0.0, 0.0];
+      }
+    }
+    return data;
+  } catch (e) {
+    return null;
+  }
+}
+
 function computeHash(obj) {
   if (!obj) return "";
   const str = JSON.stringify(obj);
@@ -669,7 +696,7 @@ async function commitActiveWorkflow(message) {
     showToast("没有处于激活状态的工作流");
     return;
   }
-  const cleanGraph = getNormalizedGraphData();
+  const cleanGraph = getGraphDataForSave();
   if (!cleanGraph) {
     showToast("无法获取当前画布数据");
     return;
@@ -731,6 +758,20 @@ async function restoreVersion(hash) {
     const result = await resp.json();
     const graphData = result.data || result.workflow;
     if (result.success && graphData) {
+      if (graphData.version === undefined) {
+        graphData.version = 0.4;
+      }
+      if (!graphData.extra) {
+        graphData.extra = {};
+      }
+      if (!graphData.extra.ds) {
+        graphData.extra.ds = { scale: 1.0, offset: [0.0, 0.0] };
+      } else {
+        if (typeof graphData.extra.ds.scale !== "number") graphData.extra.ds.scale = 1.0;
+        if (!Array.isArray(graphData.extra.ds.offset) || graphData.extra.ds.offset.length < 2) {
+          graphData.extra.ds.offset = [0.0, 0.0];
+        }
+      }
       const wfStore = findWorkflowStore();
       const fullPath = "workflows/" + currentActiveWorkflow;
       const item = wfStore?.getWorkflowByPath?.(fullPath);
