@@ -617,6 +617,36 @@ async function restoreVersion(hash) {
   }
 }
 
+// Revert / Discard uncommitted changes on active workflow
+async function revertCurrentWorkflow() {
+  if (!currentActiveWorkflow) {
+    showToast("当前没有打开的工作流");
+    return;
+  }
+  if (!isDirty) {
+    showToast("当前工作流没有未保存的修改");
+    return;
+  }
+
+  const baseFileName = currentActiveWorkflow.split("/").pop();
+  if (!confirm(`确定要放弃对 "${baseFileName}" 的所有修改并还原到基底版本吗？未保存的内容将丢失！`)) {
+    return;
+  }
+
+  try {
+    const latest = historyList[0];
+    const latestHash = latest ? (latest.short_hash || latest.id || latest.hash || "") : "";
+    if (latestHash) {
+      await restoreVersion(latestHash);
+    } else {
+      await openWorkflow(currentActiveWorkflow, true);
+    }
+    showToast(`已还原 "${baseFileName}" 到基底版本`);
+  } catch (err) {
+    showToast(`还原失败: ${err.message}`);
+  }
+}
+
 // Delete specific version
 async function deleteVersion(hash) {
   if (!currentActiveWorkflow) return;
@@ -645,13 +675,24 @@ async function deleteVersion(hash) {
 // UI Update functions
 function updateDirtyUI() {
   const dirtyBadge = mountedPanel?.querySelector(".wfg-dirty-badge");
-  if (!dirtyBadge) return;
-  if (isDirty) {
-    dirtyBadge.className = "wfg-dirty-badge dirty";
-    dirtyBadge.innerHTML = "<span>●</span> 已修改";
-  } else {
-    dirtyBadge.className = "wfg-dirty-badge clean";
-    dirtyBadge.innerHTML = "<span>✓</span> 干净";
+  const revertBtn = mountedPanel?.querySelector(".wfg-revert-btn");
+  const revertActionBtn = mountedPanel?.querySelector(".wfg-revert-action-btn");
+
+  if (dirtyBadge) {
+    if (isDirty) {
+      dirtyBadge.className = "wfg-dirty-badge dirty";
+      dirtyBadge.innerHTML = "<span>●</span> 已修改";
+    } else {
+      dirtyBadge.className = "wfg-dirty-badge clean";
+      dirtyBadge.innerHTML = "<span>✓</span> 干净";
+    }
+  }
+
+  if (revertBtn) {
+    revertBtn.style.display = isDirty ? "inline-flex" : "none";
+  }
+  if (revertActionBtn) {
+    revertActionBtn.style.display = isDirty ? "inline-flex" : "none";
   }
 }
 
@@ -967,11 +1008,13 @@ function mountWorkflowGitPanel(rootEl) {
           <div class="wfg-badges-right">
             <span class="wfg-version-hash-badge">#------</span>
             <span class="wfg-dirty-badge clean"><span>✓</span> 干净</span>
+            <button class="wfg-revert-btn" title="放弃修改并还原到基底版本" style="display: none;">↺ 还原</button>
           </div>
         </div>
         <div class="wfg-commit-row">
           <input class="wfg-commit-input" placeholder="版本修改说明 (Enter 保存)..." />
           <button class="wfg-commit-btn">✓ 保存</button>
+          <button class="wfg-revert-action-btn" title="放弃未保存修改并还原" style="display: none;">↺ 还原</button>
         </div>
         <div class="wfg-history-list"></div>
         <div class="wfg-pagination"></div>
@@ -1026,6 +1069,10 @@ function mountWorkflowGitPanel(rootEl) {
       doCommit();
     }
   });
+
+  // Bind Revert buttons
+  rootEl.querySelector(".wfg-revert-btn")?.addEventListener("click", revertCurrentWorkflow);
+  rootEl.querySelector(".wfg-revert-action-btn")?.addEventListener("click", revertCurrentWorkflow);
 
   // Initial render
   if (treeItems.length === 0) {
