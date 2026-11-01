@@ -113,7 +113,10 @@ function computeHash(obj) {
 }
 
 function setCleanBaseline(graphData) {
-  if (graphData) {
+  const currentNorm = getNormalizedGraphData();
+  if (currentNorm) {
+    cleanBaselineHash = computeHash(currentNorm);
+  } else if (graphData) {
     const clean = JSON.parse(JSON.stringify(graphData));
     if (clean.extra?.ds) {
       delete clean.extra.ds.offset;
@@ -121,7 +124,7 @@ function setCleanBaseline(graphData) {
     }
     cleanBaselineHash = computeHash(clean);
   } else {
-    cleanBaselineHash = computeHash(getNormalizedGraphData());
+    cleanBaselineHash = "";
   }
   isDirty = false;
   updateDirtyUI();
@@ -318,6 +321,9 @@ async function openWorkflow(relPath, force = false) {
 
     currentActiveWorkflow = relPath;
     setCleanBaseline(graphData);
+    setTimeout(() => {
+      setCleanBaseline();
+    }, 100);
     await fetchHistory(relPath);
     updateActiveCardUI();
     renderTree();
@@ -593,26 +599,34 @@ async function commitActiveWorkflow(message) {
 async function restoreVersion(hash) {
   if (!currentActiveWorkflow) return;
   try {
-    const resp = await fetch("/workflow-git/restore", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        filename: currentActiveWorkflow,
-        hash: hash
-      })
-    });
+    const url = `/workflow-git/checkout?hash=${encodeURIComponent(hash)}&filename=${encodeURIComponent(currentActiveWorkflow)}`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      showToast(`载入版本失败: HTTP ${resp.status}`);
+      return;
+    }
     const result = await resp.json();
-    if (result.success && result.data) {
+    const graphData = result.data || result.workflow;
+    if (result.success && graphData) {
       const wfStore = app.extensionManager?.workflow;
-      const item = wfStore?.getWorkflowByPath?.("workflows/" + currentActiveWorkflow);
-      await app.loadGraphData(result.data, true, true, item || currentActiveWorkflow);
-      setCleanBaseline(result.data);
+      const fullPath = "workflows/" + currentActiveWorkflow;
+      const item = wfStore?.getWorkflowByPath?.(fullPath);
+      await app.loadGraphData(graphData, true, true, item || currentActiveWorkflow);
+      if (wfStore?.activeWorkflow) {
+        wfStore.activeWorkflow.isModified = false;
+      }
+      setCleanBaseline(graphData);
+      setTimeout(() => {
+        setCleanBaseline();
+      }, 100);
       await fetchHistory(currentActiveWorkflow);
+      updateActiveCardUI();
       showToast(`已载入版本: #${hash.slice(0, 7)}`);
     } else {
       alert(result.error || "载入版本失败");
     }
   } catch (e) {
+    console.error("[WorkflowVersion] Error restoring version:", e);
     showToast(`载入版本失败: ${e.message}`);
   }
 }
@@ -643,6 +657,7 @@ async function revertCurrentWorkflow() {
     }
     showToast(`已还原 "${baseFileName}" 到基底版本`);
   } catch (err) {
+    console.error("[WorkflowVersion] Error reverting:", err);
     showToast(`还原失败: ${err.message}`);
   }
 }
@@ -675,7 +690,6 @@ async function deleteVersion(hash) {
 // UI Update functions
 function updateDirtyUI() {
   const dirtyBadge = mountedPanel?.querySelector(".wfg-dirty-badge");
-  const revertBtn = mountedPanel?.querySelector(".wfg-revert-btn");
   const revertActionBtn = mountedPanel?.querySelector(".wfg-revert-action-btn");
 
   if (dirtyBadge) {
@@ -688,9 +702,6 @@ function updateDirtyUI() {
     }
   }
 
-  if (revertBtn) {
-    revertBtn.style.display = isDirty ? "inline-flex" : "none";
-  }
   if (revertActionBtn) {
     revertActionBtn.style.display = isDirty ? "inline-flex" : "none";
   }
@@ -1008,7 +1019,6 @@ function mountWorkflowGitPanel(rootEl) {
           <div class="wfg-badges-right">
             <span class="wfg-version-hash-badge">#------</span>
             <span class="wfg-dirty-badge clean"><span>✓</span> 干净</span>
-            <button class="wfg-revert-btn" title="放弃修改并还原到基底版本" style="display: none;">↺ 还原</button>
           </div>
         </div>
         <div class="wfg-commit-row">
@@ -1070,8 +1080,7 @@ function mountWorkflowGitPanel(rootEl) {
     }
   });
 
-  // Bind Revert buttons
-  rootEl.querySelector(".wfg-revert-btn")?.addEventListener("click", revertCurrentWorkflow);
+  // Bind Revert button
   rootEl.querySelector(".wfg-revert-action-btn")?.addEventListener("click", revertCurrentWorkflow);
 
   // Initial render
