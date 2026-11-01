@@ -260,26 +260,61 @@ async function fetchHistory(filename) {
 }
 
 // Open / Load workflow into ComfyUI canvas
-async function openWorkflow(relPath) {
+async function openWorkflow(relPath, force = false) {
   try {
-    const resp = await api.getUserData("workflows/" + relPath);
+    const wfStore = app.extensionManager?.workflow;
+    const fullPath = "workflows/" + relPath;
+
+    // 1. If it's already the active workflow and not forcing reload, just ensure active tab is focused and return
+    if (!force && currentActiveWorkflow === relPath) {
+      if (wfStore) {
+        const item = wfStore.getWorkflowByPath?.(fullPath);
+        if (item && wfStore.activeWorkflow?.path !== fullPath) {
+          await wfStore.openWorkflow(item);
+        }
+      }
+      updateActiveCardUI();
+      renderTree();
+      return;
+    }
+
+    // 2. Look up the workflow item in ComfyUI store
+    let item = wfStore?.getWorkflowByPath?.(fullPath);
+    if (!item && wfStore?.syncWorkflows) {
+      await wfStore.syncWorkflows();
+      item = wfStore.getWorkflowByPath?.(fullPath);
+    }
+
+    // 3. Load the workflow content
+    const resp = await api.getUserData(fullPath);
     if (resp.status !== 200) {
       showToast(`载入工作流失败: ${resp.statusText}`);
       return;
     }
     const graphData = await resp.json();
-    await app.loadGraphData(graphData);
 
-    // Sync with ComfyUI native workflow store if available
-    try {
-      const wfStore = app.extensionManager?.workflow;
-      if (wfStore) {
-        const item = wfStore.getWorkflowByPath?.("workflows/" + relPath);
-        if (item) {
-          await wfStore.openWorkflow(item);
-        }
+    // 4. If current active tab is an untouched clean temporary tab ("Unsaved Workflow"), clean it up
+    if (wfStore) {
+      const activeWf = wfStore.activeWorkflow;
+      if (activeWf && activeWf.isTemporary && !activeWf.isModified) {
+        try {
+          if (typeof wfStore.detachWorkflow === "function") {
+            wfStore.detachWorkflow(activeWf);
+          }
+        } catch (e) {}
       }
-    } catch (e) {}
+    }
+
+    // 5. Load graph data passing the workflow instance (or relPath) as 4th arg
+    // This tells ComfyUI this is an existing workflow so it NEVER spawns "Unsaved Workflow"
+    await app.loadGraphData(graphData, true, true, item || relPath);
+
+    // 6. Ensure wfStore marks this workflow as active
+    if (wfStore && item) {
+      try {
+        await wfStore.openWorkflow(item);
+      } catch (e) {}
+    }
 
     currentActiveWorkflow = relPath;
     setCleanBaseline(graphData);
@@ -568,7 +603,9 @@ async function restoreVersion(hash) {
     });
     const result = await resp.json();
     if (result.success && result.data) {
-      await app.loadGraphData(result.data);
+      const wfStore = app.extensionManager?.workflow;
+      const item = wfStore?.getWorkflowByPath?.("workflows/" + currentActiveWorkflow);
+      await app.loadGraphData(result.data, true, true, item || currentActiveWorkflow);
       setCleanBaseline(result.data);
       await fetchHistory(currentActiveWorkflow);
       showToast(`已载入版本: #${hash.slice(0, 7)}`);
