@@ -232,7 +232,7 @@ def register_api_routes(app: web.Application, version_service, config_manager):
         response = await handler(request)
 
         # 1. Intercept file/folder move operations
-        if response.status == 200 and request.method == "POST" and "/userdata/" in request.path and "/move/" in request.path:
+        if response.status == 200 and request.method == "POST" and "userdata" in request.path and "/move/" in request.path:
             try:
                 src_param = request.match_info.get("file", "")
                 dest_param = request.match_info.get("dest", "")
@@ -253,8 +253,8 @@ def register_api_routes(app: web.Application, version_service, config_manager):
             except Exception as e:
                 print(f"[WorkflowVersion] Error in rename interceptor: {e}")
 
-        # 2. Enrich GET /userdata with true empty folders (ending with /)
-        if response.status == 200 and request.method == "GET" and request.path == "/userdata" and request.query.get("dir") == "workflows":
+        # 2. Enrich GET /userdata or /api/userdata with true empty folders (ending with /)
+        if response.status == 200 and request.method == "GET" and (request.path in ("/userdata", "/api/userdata") or request.path.endswith("/userdata")) and request.query.get("dir") == "workflows":
             try:
                 wf_dir = config_manager.resolve_workflows_dir()
                 body_text = response.text
@@ -281,7 +281,7 @@ def register_api_routes(app: web.Application, version_service, config_manager):
                                 "modified": mtime,
                                 "created": mtime
                             })
-                    return web.json_response(items)
+                    return web.json_response(items, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
             except Exception as e:
                 print(f"[WorkflowVersion] Error enriching empty folders: {e}")
 
