@@ -76,6 +76,7 @@ let treeItems = [];
 let expandedFolders = new Set();
 let searchQuery = "";
 let currentActiveWorkflow = null; // e.g. "lcm-demo.json" or "sub/test.json"
+let currentBaseHash = null; // Currently loaded / active version hash for current workflow
 let cleanBaselineHash = null;
 let isDirty = false;
 let historyList = [];
@@ -256,11 +257,19 @@ async function fetchHistory(filename) {
     if (data.success) {
       historyList = data.history || [];
       historyPage = 1;
+      if (!currentBaseHash || !historyList.some(h => {
+        const hHash = h.short_hash || h.id || h.hash || "";
+        return hHash && (hHash === currentBaseHash || hHash.startsWith(currentBaseHash) || currentBaseHash.startsWith(hHash));
+      })) {
+        currentBaseHash = historyList[0] ? (historyList[0].short_hash || historyList[0].id || historyList[0].hash || "") : null;
+      }
     } else {
       historyList = [];
+      currentBaseHash = null;
     }
   } catch (e) {
     historyList = [];
+    currentBaseHash = null;
   }
   updateHistoryUI();
 }
@@ -412,6 +421,9 @@ async function openWorkflow(relPath, force = false) {
       } catch (e) {}
     }
 
+    if (currentActiveWorkflow !== relPath) {
+      currentBaseHash = null;
+    }
     currentActiveWorkflow = relPath;
     setCleanBaseline(graphData);
     setTimeout(() => {
@@ -689,6 +701,7 @@ async function commitActiveWorkflow(message) {
 
     if (result.success) {
       const commitHash = result.short_hash || result.commit_hash || result.hash || result.id || "";
+      currentBaseHash = commitHash;
       showToast(`已保存版本: #${commitHash.slice(0, 7)}`);
       setCleanBaseline(cleanGraph);
       await fetchHistory(currentActiveWorkflow);
@@ -738,12 +751,14 @@ async function restoreVersion(hash) {
       if (wfStore?.activeWorkflow) {
         wfStore.activeWorkflow.isModified = false;
       }
+      currentBaseHash = hash;
       setCleanBaseline(graphData);
       setTimeout(() => {
         setCleanBaseline();
       }, 100);
-      await fetchHistory(currentActiveWorkflow);
+      updateHistoryUI();
       updateActiveCardUI();
+      performDirtyCheck();
       showToast(`已载入版本: #${hash.slice(0, 7)}`);
     } else {
       alert(result.error || "载入版本失败");
@@ -771,10 +786,9 @@ async function revertCurrentWorkflow() {
   }
 
   try {
-    const latest = historyList[0];
-    const latestHash = latest ? (latest.short_hash || latest.id || latest.hash || "") : "";
-    if (latestHash) {
-      await restoreVersion(latestHash);
+    const targetHash = currentBaseHash || (historyList[0] ? (historyList[0].short_hash || historyList[0].id || historyList[0].hash || "") : "");
+    if (targetHash) {
+      await restoreVersion(targetHash);
     } else {
       await openWorkflow(currentActiveWorkflow, true);
     }
@@ -866,10 +880,9 @@ function updateActiveCardUI() {
   }
 
   if (hashBadge) {
-    const latest = historyList[0];
-    const latestHash = latest ? (latest.short_hash || latest.id || latest.hash || "") : "";
-    if (latestHash) {
-      hashBadge.textContent = `#${latestHash.slice(0, 7)}`;
+    const activeBaseHash = currentBaseHash || (historyList[0] ? (historyList[0].short_hash || historyList[0].id || historyList[0].hash || "") : "");
+    if (activeBaseHash) {
+      hashBadge.textContent = `#${activeBaseHash.slice(0, 7)}`;
       hashBadge.style.display = "inline-block";
     } else {
       hashBadge.style.display = "none";
@@ -905,12 +918,12 @@ function updateHistoryUI() {
 
   const startIdx = (historyPage - 1) * historyPageSize;
   const pagedItems = historyList.slice(startIdx, startIdx + historyPageSize);
-  const latestHash = historyList[0] ? (historyList[0].short_hash || historyList[0].id || historyList[0].hash || "") : "";
+  const activeBaseHash = currentBaseHash || (historyList[0] ? (historyList[0].short_hash || historyList[0].id || historyList[0].hash || "") : "");
 
   listEl.innerHTML = "";
   pagedItems.forEach((ver) => {
     const verHash = ver.short_hash || ver.id || ver.hash || "";
-    const isBase = verHash && verHash === latestHash;
+    const isBase = Boolean(verHash && activeBaseHash && (verHash === activeBaseHash || verHash.startsWith(activeBaseHash) || activeBaseHash.startsWith(verHash)));
     const item = document.createElement("div");
     item.className = `wfg-history-item ${isBase ? "current-base" : ""}`;
 
@@ -1391,6 +1404,7 @@ function syncActiveWorkflowFromComfy() {
       }
       if (relKey && relKey !== currentActiveWorkflow) {
         currentActiveWorkflow = relKey;
+        currentBaseHash = null;
         setCleanBaseline(getNormalizedGraphData());
         fetchHistory(currentActiveWorkflow).then(() => {
           try { updateActiveCardUI(); } catch (e) {}
