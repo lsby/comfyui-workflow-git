@@ -245,7 +245,7 @@ async function fetchHistory(filename) {
     return;
   }
   try {
-    const resp = await fetch(`/workflow-git/history?filename=${encodeURIComponent(filename)}`);
+    const resp = await fetch(`/workflow-git/history?file=${encodeURIComponent(filename)}&filename=${encodeURIComponent(filename)}`);
     const data = await resp.json();
     if (data.success) {
       historyList = data.history || [];
@@ -668,7 +668,7 @@ function updateActiveCardUI() {
 
   const titleEl = card.querySelector(".wfg-active-file-title");
   if (titleEl) {
-    titleEl.innerHTML = `<span class="pi pi-code-branch"></span> <span>${currentActiveWorkflow}</span>`;
+    titleEl.innerHTML = `<span class="wfg-tab-icon" style="font-size: 13px; margin-right: 2px;"></span> <span>${currentActiveWorkflow}</span>`;
   }
 
   const hashBadge = card.querySelector(".wfg-version-hash-badge");
@@ -940,12 +940,10 @@ function mountWorkflowGitPanel(rootEl) {
       <!-- Header -->
       <div class="wfg-header">
         <div class="wfg-title">
-          <span class="pi pi-code-branch" style="font-size: 14px;"></span>
+          <span class="wfg-tab-icon" style="font-size: 14px; margin-right: 2px;"></span>
           <span>工作流版本管理</span>
         </div>
         <div class="wfg-header-actions">
-          <button class="wfg-icon-btn btn-new-folder" title="新建文件夹">📁+ 文件夹</button>
-          <button class="wfg-icon-btn btn-new-workflow" title="新建工作流">📄+ 工作流</button>
           <button class="wfg-icon-btn btn-refresh" title="刷新列表">🔄</button>
         </div>
       </div>
@@ -963,7 +961,7 @@ function mountWorkflowGitPanel(rootEl) {
       <div class="wfg-version-card" style="display: ${currentActiveWorkflow ? "block" : "none"};">
         <div class="wfg-version-card-header">
           <div class="wfg-active-file-title" title="${currentActiveWorkflow || ""}">
-            <span class="pi pi-code-branch"></span>
+            <span class="wfg-tab-icon" style="font-size: 13px; margin-right: 2px;"></span>
             <span>${currentActiveWorkflow || ""}</span>
           </div>
           <div class="wfg-badges-right">
@@ -990,8 +988,6 @@ function mountWorkflowGitPanel(rootEl) {
   `;
 
   // Bind Header actions
-  rootEl.querySelector(".btn-new-folder")?.addEventListener("click", () => createNewFolder(""));
-  rootEl.querySelector(".btn-new-workflow")?.addEventListener("click", () => createNewWorkflow(""));
   rootEl.querySelector(".btn-refresh")?.addEventListener("click", async () => {
     await fetchWorkflowsList();
     if (currentActiveWorkflow) await fetchHistory(currentActiveWorkflow);
@@ -1096,7 +1092,7 @@ app.registerExtension({
       if (comfyApp.extensionManager && typeof comfyApp.extensionManager.registerSidebarTab === "function") {
         comfyApp.extensionManager.registerSidebarTab({
           id: "workflow-git-tab",
-          icon: "pi pi-code-branch",
+          icon: "wfg-tab-icon icon-[comfy--workflow]",
           title: "工作流管理",
           tooltip: "工作流版本与工程管理",
           type: "custom",

@@ -30,8 +30,8 @@ def register_api_routes(app: web.Application, version_service, config_manager):
             version_service.workflows_dir = config_manager.resolve_workflows_dir()
             version_service.storage_dir = version_service.workflows_dir / ".workflow_versions"
             data = await request.json()
-            file_name = data.get("file_name", "workflow.json").strip()
-            workflow_data = data.get("workflow", {})
+            file_name = (data.get("filename") or data.get("file_name") or "workflow.json").strip()
+            workflow_data = data.get("data") if data.get("data") is not None else data.get("workflow", {})
             message = data.get("message", "").strip()
 
             if isinstance(workflow_data, dict):
@@ -49,7 +49,7 @@ def register_api_routes(app: web.Application, version_service, config_manager):
         try:
             version_service.workflows_dir = config_manager.resolve_workflows_dir()
             version_service.storage_dir = version_service.workflows_dir / ".workflow_versions"
-            file_name = request.query.get("file", None)
+            file_name = request.query.get("filename") or request.query.get("file")
             if file_name:
                 file_name = file_name.strip()
             limit = int(request.query.get("limit", 100))
@@ -58,41 +58,50 @@ def register_api_routes(app: web.Application, version_service, config_manager):
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
+    @routes.post("/workflow-git/restore")
+    @routes.post("/workflow-git/checkout")
     @routes.get("/workflow-git/checkout")
     async def checkout_file(request):
         try:
             version_service.workflows_dir = config_manager.resolve_workflows_dir()
             version_service.storage_dir = version_service.workflows_dir / ".workflow_versions"
-            short_id = request.query.get("hash", "").strip()
-            file_name = request.query.get("file", "").strip() or None
+            if request.method == "POST":
+                data = await request.json()
+                short_id = (data.get("hash") or data.get("id") or "").strip()
+                file_name = (data.get("filename") or data.get("file_name") or data.get("file") or "").strip()
+            else:
+                short_id = request.query.get("hash", "").strip()
+                file_name = (request.query.get("filename") or request.query.get("file") or "").strip()
+
             if not short_id:
                 return web.json_response({"success": False, "error": "Missing version hash parameter"}, status=400)
 
-            result = version_service.get_file_content_at_version(short_id, file_name)
+            result = version_service.get_file_content_at_version(short_id, file_name or None)
             if result is None:
                 return web.json_response({"success": False, "error": "Version snapshot not found"}, status=404)
 
             actual_file, content = result
             try:
                 parsed = json.loads(content)
-                return web.json_response({"success": True, "file": actual_file, "workflow": parsed})
+                return web.json_response({"success": True, "file": actual_file, "data": parsed, "workflow": parsed})
             except Exception:
                 return web.json_response({"success": True, "file": actual_file, "raw_content": content})
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
+    @routes.post("/workflow-git/delete-version")
     @routes.post("/workflow-git/delete")
     async def delete_version(request):
         try:
             version_service.workflows_dir = config_manager.resolve_workflows_dir()
             version_service.storage_dir = version_service.workflows_dir / ".workflow_versions"
             data = await request.json()
-            short_id = data.get("hash", "").strip()
-            file_name = data.get("file_name", "").strip()
-            if not short_id or not file_name:
-                return web.json_response({"success": False, "error": "Missing hash or file_name"}, status=400)
+            short_id = (data.get("hash") or data.get("id") or "").strip()
+            file_name = (data.get("filename") or data.get("file_name") or data.get("file") or "").strip()
+            if not short_id:
+                return web.json_response({"success": False, "error": "Missing hash parameter"}, status=400)
 
-            ok = version_service.delete_version(short_id, file_name)
+            ok = version_service.delete_version(short_id, file_name or "workflow.json")
             return web.json_response({"success": ok})
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
