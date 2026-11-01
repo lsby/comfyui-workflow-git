@@ -1111,24 +1111,14 @@ function renderTree() {
 function mountWorkflowGitPanel(rootEl) {
   mountedPanel = rootEl;
 
-  // Enforce full-height flex column layout on rootEl and parent wrappers
-  const makeFullHeight = (node) => {
-    if (!node || node === document.body) return;
-    node.style.setProperty("height", "100%", "important");
-    node.style.setProperty("max-height", "100%", "important");
-    node.style.setProperty("display", "flex", "important");
-    node.style.setProperty("flex-direction", "column", "important");
-    node.style.setProperty("flex", "1 1 100%", "important");
-    node.style.setProperty("overflow", "hidden", "important");
-  };
-  makeFullHeight(rootEl);
-  let p = rootEl.parentElement;
-  while (p && p !== document.body) {
-    makeFullHeight(p);
-    if (p.classList.contains("sidebar-content-container") || p.classList.contains("side-bar-panel")) {
-      break;
-    }
-    p = p.parentElement;
+  // Enforce full-height flex column layout ONLY on rootEl and its direct sidebar-content container
+  // NEVER touch .side-bar-panel so ComfyUI Splitter horizontal drag and v-show work normally
+  rootEl.style.cssText = "height: 100% !important; max-height: 100% !important; display: flex !important; flex-direction: column !important; flex: 1 1 0% !important; min-height: 0 !important; overflow: hidden !important;";
+  if (rootEl.parentElement && rootEl.parentElement.classList.contains("sidebar-content-container")) {
+    rootEl.parentElement.style.setProperty("display", "flex", "important");
+    rootEl.parentElement.style.setProperty("flex-direction", "column", "important");
+    rootEl.parentElement.style.setProperty("overflow", "hidden", "important");
+    rootEl.parentElement.style.setProperty("min-height", "0", "important");
   }
 
   rootEl.innerHTML = `
@@ -1356,6 +1346,12 @@ function mountWorkflowGitPanel(rootEl) {
 }
 
 function unmountWorkflowGitPanel() {
+  if (mountedPanel && mountedPanel.parentElement && mountedPanel.parentElement.classList.contains("sidebar-content-container")) {
+    mountedPanel.parentElement.style.removeProperty("display");
+    mountedPanel.parentElement.style.removeProperty("flex-direction");
+    mountedPanel.parentElement.style.removeProperty("overflow");
+    mountedPanel.parentElement.style.removeProperty("min-height");
+  }
   mountedPanel = null;
 }
 
