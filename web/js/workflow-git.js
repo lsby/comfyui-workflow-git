@@ -1140,6 +1140,11 @@ function mountWorkflowGitPanel(rootEl) {
         <div class="wfg-tree-container"></div>
       </div>
 
+      <!-- VS Code style Sash / Resize Handle -->
+      <div class="wfg-resize-handle" title="拖动调整时间线高度">
+        <div class="wfg-resize-line"></div>
+      </div>
+
       <!-- Timeline / Version History Section (Bottom Docked Area, VS Code Style) -->
       <div class="wfg-version-card">
         <div class="wfg-version-card-header" title="点击折叠/展开时间线">
@@ -1212,15 +1217,83 @@ function mountWorkflowGitPanel(rootEl) {
   // Bind Revert button
   rootEl.querySelector(".wfg-revert-action-btn")?.addEventListener("click", revertCurrentWorkflow);
 
+  // Drag to resize Timeline height (VS Code Sash style)
+  const resizeHandle = rootEl.querySelector(".wfg-resize-handle");
+  const timelineCard = rootEl.querySelector(".wfg-version-card");
+  const sidebarRoot = rootEl.querySelector(".wfg-sidebar-root");
+
+  let isDragging = false;
+  let startY = 0;
+  let startHeight = 0;
+
+  if (resizeHandle && timelineCard && sidebarRoot) {
+    resizeHandle.addEventListener("pointerdown", (e) => {
+      if (timelineCard.classList.contains("collapsed")) return;
+      isDragging = true;
+      startY = e.clientY;
+      startHeight = timelineCard.getBoundingClientRect().height;
+      resizeHandle.classList.add("active");
+      document.body.style.cursor = "row-resize";
+      document.body.style.userSelect = "none";
+
+      const onPointerMove = (ev) => {
+        if (!isDragging) return;
+        const dy = startY - ev.clientY; // dragging upward expands timeline
+        const containerHeight = sidebarRoot.getBoundingClientRect().height;
+        const minHeight = 100;
+        const maxHeight = Math.max(minHeight, containerHeight - 120);
+        const newHeight = Math.min(Math.max(startHeight + dy, minHeight), maxHeight);
+
+        timelineCard.style.height = `${newHeight}px`;
+        localStorage.setItem("wfg_timeline_height", Math.round(newHeight).toString());
+      };
+
+      const onPointerUp = () => {
+        if (!isDragging) return;
+        isDragging = false;
+        resizeHandle.classList.remove("active");
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+    });
+  }
+
   // Bind Timeline header collapse/expand toggle
   rootEl.querySelector(".wfg-version-card-header")?.addEventListener("click", (e) => {
     // Prevent collapsing if user clicked on badges
     if (e.target.closest(".wfg-badges-right")) return;
-    const card = rootEl.querySelector(".wfg-version-card");
-    if (card) {
-      card.classList.toggle("collapsed");
+    if (!timelineCard) return;
+
+    const isCollapsed = timelineCard.classList.toggle("collapsed");
+    if (isCollapsed) {
+      if (resizeHandle) resizeHandle.style.display = "none";
+      timelineCard.style.height = "31px";
+    } else {
+      if (resizeHandle) resizeHandle.style.display = "flex";
+      const savedHeight = parseInt(localStorage.getItem("wfg_timeline_height") || "260", 10);
+      timelineCard.style.height = `${Math.max(100, savedHeight)}px`;
     }
+    localStorage.setItem("wfg_timeline_collapsed", isCollapsed ? "1" : "0");
   });
+
+  // Restore initial collapsed / height state
+  const isInitiallyCollapsed = localStorage.getItem("wfg_timeline_collapsed") === "1";
+  if (timelineCard) {
+    if (isInitiallyCollapsed) {
+      timelineCard.classList.add("collapsed");
+      timelineCard.style.height = "31px";
+      if (resizeHandle) resizeHandle.style.display = "none";
+    } else {
+      const savedHeight = parseInt(localStorage.getItem("wfg_timeline_height") || "260", 10);
+      timelineCard.style.height = `${Math.max(100, savedHeight)}px`;
+      if (resizeHandle) resizeHandle.style.display = "flex";
+    }
+  }
 
   // Initial render
   if (treeItems.length === 0) {

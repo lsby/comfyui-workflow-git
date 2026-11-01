@@ -152,6 +152,34 @@
   padding: 30px 10px;
 }
 
+/* VS Code style Sash / Resize Handle */
+.wfg-resize-handle {
+  height: 6px;
+  margin-top: -3px;
+  margin-bottom: -3px;
+  cursor: row-resize;
+  position: relative;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+}
+
+.wfg-resize-line {
+  width: 100%;
+  height: 2px;
+  background: transparent;
+  transition: background 0.1s ease;
+  pointer-events: none;
+}
+
+.wfg-resize-handle:hover .wfg-resize-line,
+.wfg-resize-handle.active .wfg-resize-line {
+  background: #0284c7;
+  box-shadow: 0 0 4px #0284c7;
+}
+
 /* Timeline / Version Card (Bottom Docked Area like VS Code Timeline) */
 .wfg-version-card {
   border-top: 1px solid var(--p-content-border-color, #27272a);
@@ -160,6 +188,22 @@
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+  height: 260px;
+  min-height: 31px;
+}
+
+.wfg-version-card.collapsed {
+  height: 31px !important;
+  min-height: 31px !important;
+  flex-shrink: 0 !important;
+}
+
+.wfg-version-card.collapsed .wfg-timeline-body {
+  display: none !important;
+}
+
+.wfg-version-card.collapsed .wfg-version-card-header {
+  border-bottom: none;
 }
 
 .wfg-version-card-header {
@@ -167,6 +211,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 6px 12px;
+  height: 31px;
+  box-sizing: border-box;
   font-size: 11px;
   background: #141418;
   cursor: pointer;
@@ -224,17 +270,14 @@
 }
 
 .wfg-timeline-body {
-  padding: 10px 12px;
+  flex: 1;
+  padding: 8px 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   background: #18181c;
-  max-height: 280px;
-  overflow-y: auto;
-}
-
-.wfg-version-card.collapsed .wfg-timeline-body {
-  display: none !important;
+  overflow: hidden;
+  min-height: 0;
 }
 
 .wfg-badges-right {
@@ -370,13 +413,13 @@
 
 /* History list & pagination */
 .wfg-history-list {
-  max-height: 220px;
+  flex: 1;
+  min-height: 50px;
   overflow-y: auto;
   border: 1px solid #2d2d38;
   border-radius: 6px;
   background: #141417;
   padding: 4px;
-  margin-bottom: 6px;
 }
 
 .wfg-history-item {
