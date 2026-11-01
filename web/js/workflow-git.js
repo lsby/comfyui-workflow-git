@@ -797,17 +797,22 @@ function updateDirtyUI() {
   const revertActionBtn = mountedPanel?.querySelector(".wfg-revert-action-btn");
 
   if (dirtyBadge) {
-    if (isDirty) {
-      dirtyBadge.className = "wfg-dirty-badge dirty";
-      dirtyBadge.innerHTML = "<span>●</span> 已修改";
+    if (!currentActiveWorkflow) {
+      dirtyBadge.style.display = "none";
     } else {
-      dirtyBadge.className = "wfg-dirty-badge clean";
-      dirtyBadge.innerHTML = "<span>✓</span> 干净";
+      dirtyBadge.style.display = "inline-flex";
+      if (isDirty) {
+        dirtyBadge.className = "wfg-dirty-badge dirty";
+        dirtyBadge.innerHTML = "<span>●</span> 已修改";
+      } else {
+        dirtyBadge.className = "wfg-dirty-badge clean";
+        dirtyBadge.innerHTML = "<span>✓</span> 干净";
+      }
     }
   }
 
   if (revertActionBtn) {
-    revertActionBtn.style.display = isDirty ? "inline-flex" : "none";
+    revertActionBtn.style.display = (currentActiveWorkflow && isDirty) ? "inline-flex" : "none";
   }
 }
 
@@ -816,18 +821,26 @@ function updateActiveCardUI() {
   const card = mountedPanel.querySelector(".wfg-version-card");
   if (!card) return;
 
+  const titleEl = card.querySelector(".wfg-active-file-title");
+  const commitRow = card.querySelector(".wfg-commit-row");
+  const hashBadge = card.querySelector(".wfg-version-hash-badge");
+
   if (!currentActiveWorkflow) {
-    card.style.display = "none";
+    if (titleEl) {
+      titleEl.innerHTML = `<span style="color: #71717a; font-style: italic;">未选择工作流</span>`;
+    }
+    if (hashBadge) hashBadge.style.display = "none";
+    if (commitRow) commitRow.style.display = "none";
+    updateDirtyUI();
+    updateHistoryUI();
     return;
   }
-  card.style.display = "block";
 
-  const titleEl = card.querySelector(".wfg-active-file-title");
+  if (commitRow) commitRow.style.display = "flex";
   if (titleEl) {
-    titleEl.innerHTML = `<span class="wfg-tab-icon" style="font-size: 13px; margin-right: 2px;"></span> <span>${currentActiveWorkflow}</span>`;
+    titleEl.innerHTML = `<span class="wfg-tab-icon" style="font-size: 12px; margin-right: 2px;"></span> <span>${currentActiveWorkflow}</span>`;
   }
 
-  const hashBadge = card.querySelector(".wfg-version-hash-badge");
   if (hashBadge) {
     const latest = historyList[0];
     const latestHash = latest ? (latest.short_hash || latest.id || latest.hash || "") : "";
@@ -849,8 +862,14 @@ function updateHistoryUI() {
   const paginationEl = mountedPanel.querySelector(".wfg-pagination");
   if (!listEl || !paginationEl) return;
 
+  if (!currentActiveWorkflow) {
+    listEl.innerHTML = `<div style="text-align: center; color: #71717a; padding: 14px; font-size: 11px;">从上方工程目录中选择工作流以查看时间线</div>`;
+    paginationEl.style.display = "none";
+    return;
+  }
+
   if (!historyList || historyList.length === 0) {
-    listEl.innerHTML = `<div style="text-align: center; color: #71717a; padding: 12px; font-size: 11px;">暂无保存的历史版本</div>`;
+    listEl.innerHTML = `<div style="text-align: center; color: #71717a; padding: 14px; font-size: 11px;">暂无保存的历史版本</div>`;
     paginationEl.style.display = "none";
     return;
   }
@@ -1113,33 +1132,39 @@ function mountWorkflowGitPanel(rootEl) {
         </div>
       </div>
 
-      <!-- Active Workflow Version Card -->
-      <div class="wfg-version-card" style="display: ${currentActiveWorkflow ? "block" : "none"};">
-        <div class="wfg-version-card-header">
-          <div class="wfg-active-file-title" title="${currentActiveWorkflow || ""}">
-            <span class="wfg-tab-icon" style="font-size: 13px; margin-right: 2px;"></span>
-            <span>${currentActiveWorkflow || ""}</span>
-          </div>
-          <div class="wfg-badges-right">
-            <span class="wfg-version-hash-badge">#------</span>
-            <span class="wfg-dirty-badge clean"><span>✓</span> 干净</span>
-          </div>
-        </div>
-        <div class="wfg-commit-row">
-          <input class="wfg-commit-input" placeholder="版本修改说明 (Enter 保存)..." />
-          <button class="wfg-commit-btn">✓ 保存</button>
-          <button class="wfg-revert-action-btn" title="放弃未保存修改并还原" style="display: none;">↺ 还原</button>
-        </div>
-        <div class="wfg-history-list"></div>
-        <div class="wfg-pagination"></div>
-      </div>
-
-      <!-- Tree Explorer Section -->
+      <!-- Tree Explorer Section (Top Main Area) -->
       <div class="wfg-tree-section">
         <div class="wfg-tree-header">
           <span>工程文件目录</span>
         </div>
         <div class="wfg-tree-container"></div>
+      </div>
+
+      <!-- Timeline / Version History Section (Bottom Docked Area, VS Code Style) -->
+      <div class="wfg-version-card">
+        <div class="wfg-version-card-header" title="点击折叠/展开时间线">
+          <div class="wfg-timeline-header-left">
+            <span class="wfg-timeline-arrow">▼</span>
+            <span class="wfg-timeline-section-title">时间线</span>
+            <div class="wfg-active-file-title" title="${currentActiveWorkflow || ""}">
+              <span class="wfg-tab-icon" style="font-size: 12px; margin-right: 2px;"></span>
+              <span>${currentActiveWorkflow || "未选择工作流"}</span>
+            </div>
+          </div>
+          <div class="wfg-badges-right">
+            <span class="wfg-version-hash-badge" style="display: none;">#------</span>
+            <span class="wfg-dirty-badge clean" style="display: none;"><span>✓</span> 干净</span>
+          </div>
+        </div>
+        <div class="wfg-timeline-body">
+          <div class="wfg-commit-row">
+            <input class="wfg-commit-input" placeholder="版本修改说明 (Enter 保存)..." />
+            <button class="wfg-commit-btn">✓ 保存</button>
+            <button class="wfg-revert-action-btn" title="放弃未保存修改并还原" style="display: none;">↺ 还原</button>
+          </div>
+          <div class="wfg-history-list"></div>
+          <div class="wfg-pagination"></div>
+        </div>
       </div>
     </div>
   `;
@@ -1186,6 +1211,16 @@ function mountWorkflowGitPanel(rootEl) {
 
   // Bind Revert button
   rootEl.querySelector(".wfg-revert-action-btn")?.addEventListener("click", revertCurrentWorkflow);
+
+  // Bind Timeline header collapse/expand toggle
+  rootEl.querySelector(".wfg-version-card-header")?.addEventListener("click", (e) => {
+    // Prevent collapsing if user clicked on badges
+    if (e.target.closest(".wfg-badges-right")) return;
+    const card = rootEl.querySelector(".wfg-version-card");
+    if (card) {
+      card.classList.toggle("collapsed");
+    }
+  });
 
   // Initial render
   if (treeItems.length === 0) {
