@@ -95,6 +95,9 @@ function getNormalizedGraphData() {
       delete clean.extra.ds.offset;
       delete clean.extra.ds.scale;
     }
+    if (clean.version === undefined) {
+      clean.version = 0.4;
+    }
     return clean;
   } catch (e) {
     return null;

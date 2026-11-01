@@ -69,6 +69,15 @@ class VersionService:
         if not norm_rel.lower().endswith(".json"):
             norm_rel = f"{norm_rel}.json"
 
+        # Ensure workflow JSON contains a valid version for ComfyUI schema validation
+        try:
+            parsed_data = json.loads(workflow_json_str)
+            if isinstance(parsed_data, dict) and "version" not in parsed_data:
+                parsed_data["version"] = 0.4
+                workflow_json_str = json.dumps(parsed_data, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
         wf_dir = self._get_workflow_dir(norm_rel)
         snapshots_dir = wf_dir / "snapshots"
         index_file = wf_dir / "index.json"
