@@ -542,7 +542,8 @@ async function commitActiveWorkflow(message) {
     });
     const result = await resp.json();
     if (result.success) {
-      showToast(`已保存版本: #${result.hash.slice(0, 7)}`);
+      const commitHash = result.short_hash || result.hash || result.id || "";
+      showToast(`已保存版本: #${commitHash.slice(0, 7)}`);
       setCleanBaseline(cleanGraph);
       await fetchHistory(currentActiveWorkflow);
     } else {
@@ -636,8 +637,9 @@ function updateActiveCardUI() {
   const hashBadge = card.querySelector(".wfg-version-hash-badge");
   if (hashBadge) {
     const latest = historyList[0];
-    if (latest && latest.hash) {
-      hashBadge.textContent = `#${latest.hash.slice(0, 7)}`;
+    const latestHash = latest ? (latest.short_hash || latest.id || latest.hash || "") : "";
+    if (latestHash) {
+      hashBadge.textContent = `#${latestHash.slice(0, 7)}`;
       hashBadge.style.display = "inline-block";
     } else {
       hashBadge.style.display = "none";
@@ -667,11 +669,12 @@ function updateHistoryUI() {
 
   const startIdx = (historyPage - 1) * historyPageSize;
   const pagedItems = historyList.slice(startIdx, startIdx + historyPageSize);
-  const latestHash = historyList[0]?.hash;
+  const latestHash = historyList[0] ? (historyList[0].short_hash || historyList[0].id || historyList[0].hash || "") : "";
 
   listEl.innerHTML = "";
   pagedItems.forEach((ver) => {
-    const isBase = ver.hash === latestHash;
+    const verHash = ver.short_hash || ver.id || ver.hash || "";
+    const isBase = verHash && verHash === latestHash;
     const item = document.createElement("div");
     item.className = `wfg-history-item ${isBase ? "current-base" : ""}`;
 
@@ -680,19 +683,19 @@ function updateHistoryUI() {
       <div class="wfg-history-info">
         <div class="wfg-history-msg" title="${ver.message}">${ver.message || "无说明"}</div>
         <div class="wfg-history-meta">
-          <span class="hash">#${ver.hash.slice(0, 7)}</span>
+          <span class="hash">#${verHash.slice(0, 7)}</span>
           ${isBase ? '<span class="base-tag">当前基底</span>' : ""}
           <span>${dateStr}</span>
         </div>
       </div>
       <div class="wfg-history-actions">
-        ${isBase ? '<span class="wfg-history-btn" style="cursor: default; opacity: 0.6;">当前</span>' : `<button class="wfg-history-btn load" data-hash="${ver.hash}">载入</button>`}
-        <button class="wfg-history-btn delete" data-hash="${ver.hash}" title="删除该版本">🗑️</button>
+        ${isBase ? '<span class="wfg-history-btn" style="cursor: default; opacity: 0.6;">当前</span>' : `<button class="wfg-history-btn load" data-hash="${verHash}">载入</button>`}
+        <button class="wfg-history-btn delete" data-hash="${verHash}" title="删除该版本">🗑️</button>
       </div>
     `;
 
-    item.querySelector(".load")?.addEventListener("click", () => restoreVersion(ver.hash));
-    item.querySelector(".delete")?.addEventListener("click", () => deleteVersion(ver.hash));
+    item.querySelector(".load")?.addEventListener("click", () => restoreVersion(verHash));
+    item.querySelector(".delete")?.addEventListener("click", () => deleteVersion(verHash));
     listEl.appendChild(item);
   });
 
@@ -992,8 +995,27 @@ function mountWorkflowGitPanel(rootEl) {
   });
 
   // Initial render
-  updateActiveCardUI();
-  renderTree();
+  if (treeItems.length === 0) {
+    fetchWorkflowsList().then(() => {
+      try { renderTree(); } catch (e) { console.error(e); }
+    });
+  }
+  if (currentActiveWorkflow && historyList.length === 0) {
+    fetchHistory(currentActiveWorkflow).then(() => {
+      try { updateActiveCardUI(); } catch (e) { console.error(e); }
+    });
+  }
+
+  try {
+    updateActiveCardUI();
+  } catch (e) {
+    console.error("[WorkflowVersion] Error updating active card:", e);
+  }
+  try {
+    renderTree();
+  } catch (e) {
+    console.error("[WorkflowVersion] Error rendering tree:", e);
+  }
 }
 
 function unmountWorkflowGitPanel() {
@@ -1008,9 +1030,11 @@ function syncActiveWorkflowFromComfy() {
     if (activeKey && activeKey !== currentActiveWorkflow) {
       currentActiveWorkflow = activeKey;
       setCleanBaseline(getNormalizedGraphData());
-      fetchHistory(currentActiveWorkflow);
-      updateActiveCardUI();
-      renderTree();
+      fetchHistory(currentActiveWorkflow).then(() => {
+        try { updateActiveCardUI(); } catch (e) {}
+      });
+      try { updateActiveCardUI(); } catch (e) {}
+      try { renderTree(); } catch (e) {}
     }
   } catch (e) {}
 }
