@@ -1110,6 +1110,27 @@ function renderTree() {
 // Mount the custom panel inside ComfyUI sidebar slot
 function mountWorkflowGitPanel(rootEl) {
   mountedPanel = rootEl;
+
+  // Enforce full-height flex column layout on rootEl and parent wrappers
+  const makeFullHeight = (node) => {
+    if (!node || node === document.body) return;
+    node.style.setProperty("height", "100%", "important");
+    node.style.setProperty("max-height", "100%", "important");
+    node.style.setProperty("display", "flex", "important");
+    node.style.setProperty("flex-direction", "column", "important");
+    node.style.setProperty("flex", "1 1 100%", "important");
+    node.style.setProperty("overflow", "hidden", "important");
+  };
+  makeFullHeight(rootEl);
+  let p = rootEl.parentElement;
+  while (p && p !== document.body) {
+    makeFullHeight(p);
+    if (p.classList.contains("sidebar-content-container") || p.classList.contains("side-bar-panel")) {
+      break;
+    }
+    p = p.parentElement;
+  }
+
   rootEl.innerHTML = `
     <div class="wfg-sidebar-root">
       <!-- Header -->
@@ -1244,6 +1265,8 @@ function mountWorkflowGitPanel(rootEl) {
         const maxHeight = Math.max(minHeight, containerHeight - 120);
         const newHeight = Math.min(Math.max(startHeight + dy, minHeight), maxHeight);
 
+        timelineCard.style.removeProperty("flex");
+        timelineCard.style.removeProperty("max-height");
         timelineCard.style.height = `${newHeight}px`;
         localStorage.setItem("wfg_timeline_height", Math.round(newHeight).toString());
       };
@@ -1272,9 +1295,15 @@ function mountWorkflowGitPanel(rootEl) {
     const isCollapsed = timelineCard.classList.toggle("collapsed");
     if (isCollapsed) {
       if (resizeHandle) resizeHandle.style.display = "none";
-      timelineCard.style.height = "31px";
+      timelineCard.style.setProperty("height", "31px", "important");
+      timelineCard.style.setProperty("min-height", "31px", "important");
+      timelineCard.style.setProperty("max-height", "31px", "important");
+      timelineCard.style.setProperty("flex", "0 0 31px", "important");
     } else {
       if (resizeHandle) resizeHandle.style.display = "flex";
+      timelineCard.style.removeProperty("flex");
+      timelineCard.style.removeProperty("max-height");
+      timelineCard.style.minHeight = "100px";
       const savedHeight = parseInt(localStorage.getItem("wfg_timeline_height") || "260", 10);
       timelineCard.style.height = `${Math.max(100, savedHeight)}px`;
     }
@@ -1286,9 +1315,16 @@ function mountWorkflowGitPanel(rootEl) {
   if (timelineCard) {
     if (isInitiallyCollapsed) {
       timelineCard.classList.add("collapsed");
-      timelineCard.style.height = "31px";
+      timelineCard.style.setProperty("height", "31px", "important");
+      timelineCard.style.setProperty("min-height", "31px", "important");
+      timelineCard.style.setProperty("max-height", "31px", "important");
+      timelineCard.style.setProperty("flex", "0 0 31px", "important");
       if (resizeHandle) resizeHandle.style.display = "none";
     } else {
+      timelineCard.classList.remove("collapsed");
+      timelineCard.style.removeProperty("flex");
+      timelineCard.style.removeProperty("max-height");
+      timelineCard.style.minHeight = "100px";
       const savedHeight = parseInt(localStorage.getItem("wfg_timeline_height") || "260", 10);
       timelineCard.style.height = `${Math.max(100, savedHeight)}px`;
       if (resizeHandle) resizeHandle.style.display = "flex";
