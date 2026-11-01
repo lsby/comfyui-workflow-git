@@ -1,15 +1,20 @@
 import { app } from "../../../scripts/app.js";
+import { api } from "../../../scripts/api.js";
 
 // Helper: inject css
 function injectCSS() {
-  const link = document.createElement("link");
-  link.rel = "stylesheet";
-  link.href = new URL("../css/workflow-git.css", import.meta.url).href;
-  document.head.appendChild(link);
+  const linkId = "workflow-git-css-link";
+  if (!document.getElementById(linkId)) {
+    const link = document.createElement("link");
+    link.id = linkId;
+    link.rel = "stylesheet";
+    link.href = new URL("../css/workflow-git.css", import.meta.url).href;
+    document.head.appendChild(link);
+  }
 }
 
 // Toast notification helper
-function showToast(message, duration = 3000) {
+function showToast(message, duration = 2500) {
   let toast = document.querySelector(".workflow-git-toast");
   if (!toast) {
     toast = document.createElement("div");
@@ -21,28 +26,14 @@ function showToast(message, duration = 3000) {
   setTimeout(() => toast.classList.remove("active"), duration);
 }
 
-// Trigger ComfyUI's internal Pinia workflow store refresh
-async function triggerComfySyncWorkflows() {
-  try {
-    const vueApp = document.querySelector("#vue-app")?.__vue_app__;
-    const pinia = vueApp?.config?.globalProperties?.$pinia;
-    const workflowStore = pinia?._s?.get("workflow");
-    if (workflowStore && typeof workflowStore.syncWorkflows === "function") {
-      await workflowStore.syncWorkflows();
-      return true;
-    }
-  } catch (e) {}
-  return false;
-}
-
-// Custom Context Menu popup helper
-function showCustomContextMenu(x, y, items) {
+// Context Menu popup helper
+function showContextMenu(x, y, items) {
   document.querySelectorAll(".wfg-context-menu").forEach((el) => el.remove());
 
   const menu = document.createElement("div");
   menu.className = "wfg-context-menu";
 
-  const maxX = window.innerWidth - 180;
+  const maxX = window.innerWidth - 190;
   const maxY = window.innerHeight - (items.length * 36 + 20);
   menu.style.left = `${Math.min(x, maxX)}px`;
   menu.style.top = `${Math.min(y, maxY)}px`;
@@ -63,7 +54,7 @@ function showCustomContextMenu(x, y, items) {
       try {
         await it.onClick();
       } catch (err) {
-        alert(err.message || "操作失败");
+        showToast(err.message || "操作失败");
       }
     };
     menu.appendChild(itemEl);
@@ -80,1032 +71,1008 @@ function showCustomContextMenu(x, y, items) {
   setTimeout(() => document.addEventListener("pointerdown", closeListener), 10);
 }
 
-// Extract folder/file relative path from any DOM tree item by climbing parents
-function getTreeNodeRelPath(el) {
-  const parts = [];
-  let curr = el.closest(".p-treenode, [role='treeitem']");
-  while (curr) {
-    const labelEl = curr.querySelector(".p-treenode-label, [class*='node-label'], [class*='label']");
-    if (labelEl) {
-      const text = labelEl.textContent.trim().replace(/^[*•\s]+/, "").trim();
-      if (text && text.toLowerCase() !== "root" && text.toLowerCase() !== "browse" && text.toLowerCase() !== "浏览") {
-        parts.unshift(text);
-      }
-    }
-    const parentChildrenList = curr.parentElement?.closest(".p-treenode-children, [role='group']");
-    curr = parentChildrenList ? parentChildrenList.closest(".p-treenode, [role='treeitem']") : null;
-  }
-  return parts.join("/");
-}
+// Global State
+let treeItems = [];
+let expandedFolders = new Set();
+let searchQuery = "";
+let currentActiveWorkflow = null; // e.g. "lcm-demo.json" or "sub/test.json"
+let cleanBaselineHash = null;
+let isDirty = false;
+let historyList = [];
+let historyPage = 1;
+const historyPageSize = 5;
+let mountedPanel = null;
+let dirtyCheckTimer = null;
 
-// Check if tree node represents a folder
-function isTreeNodeFolder(el) {
-  const node = el.closest(".p-treenode, [role='treeitem']");
-  if (!node) return false;
-  const hasToggle = node.querySelector(".p-tree-node-toggle-button, [data-pc-section='nodetogglebutton']");
-  const hasChildren = node.querySelector(".p-treenode-children, [role='group']");
-  const labelEl = node.querySelector(".p-treenode-label, [class*='node-label']");
-  const label = labelEl ? labelEl.textContent.trim() : "";
-  return Boolean(hasToggle || hasChildren || (label && !label.toLowerCase().endsWith(".json")));
-}
-
-let lastKnownWorkflowName = "最简工作流.json";
-
-// Validate and clean workflow names, strictly filtering out execution progress strings
-function cleanWorkflowName(raw) {
-  if (!raw) return null;
-  let name = raw.trim();
-
-  // Remove dirty dots, stars, spaces
-  name = name.replace(/^[*•\s]+/, "").replace(/[*•\s]+$/, "").trim();
-
-  // Filter out ComfyUI execution progress like "[57%][70%] KSampler" or "Queue: 1"
-  if (/\[\s*\d+%\s*\]/i.test(name)) return null;
-  if (/^\[.*%\]/i.test(name)) return null;
-  if (/^ksampler/i.test(name) || /^queue/i.test(name)) return null;
-  if (!name || name.toLowerCase() === "comfyui") return null;
-
-  if (!name.endsWith(".json")) {
-    name = `${name}.json`;
-  }
-  return name;
-}
-
-// Extract current active workflow file info with nested folder support
-function getCurrentWorkflowInfo() {
+// Normalizing Graph Data for dirty check (ignoring pan/zoom)
+function getNormalizedGraphData() {
   try {
-    const vueApp = document.querySelector("#vue-app")?.__vue_app__;
-    const pinia = vueApp?.config?.globalProperties?.$pinia;
-    const workflowStore = pinia?._s?.get("workflow");
-    if (workflowStore && workflowStore.activeWorkflow) {
-      const fullPath = (workflowStore.activeWorkflow.path || "").replace(/\\/g, "/");
-      let relPath = fullPath.replace(/^workflows[/\\]/i, "").replace(/^\/+/, "");
-      if (relPath) {
-        if (!relPath.endsWith(".json")) relPath += ".json";
-        const parts = relPath.split("/");
-        const baseName = parts[parts.length - 1];
-        const folder = parts.length > 1 ? parts.slice(0, -1).join("/") : "";
-        lastKnownWorkflowName = relPath;
-        return {
-          relPath,
-          baseName,
-          folder,
-          displayName: folder ? `${baseName} (${folder})` : baseName
+    if (!app.graph) return null;
+    const raw = app.graph.serialize();
+    if (!raw) return null;
+    const clean = JSON.parse(JSON.stringify(raw));
+    if (clean.extra?.ds) {
+      delete clean.extra.ds.offset;
+      delete clean.extra.ds.scale;
+    }
+    return clean;
+  } catch (e) {
+    return null;
+  }
+}
+
+function computeHash(obj) {
+  if (!obj) return "";
+  const str = JSON.stringify(obj);
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function setCleanBaseline(graphData) {
+  if (graphData) {
+    const clean = JSON.parse(JSON.stringify(graphData));
+    if (clean.extra?.ds) {
+      delete clean.extra.ds.offset;
+      delete clean.extra.ds.scale;
+    }
+    cleanBaselineHash = computeHash(clean);
+  } else {
+    cleanBaselineHash = computeHash(getNormalizedGraphData());
+  }
+  isDirty = false;
+  updateDirtyUI();
+}
+
+function performDirtyCheck() {
+  if (!currentActiveWorkflow || !cleanBaselineHash) {
+    isDirty = false;
+    updateDirtyUI();
+    return;
+  }
+  const currentHash = computeHash(getNormalizedGraphData());
+  const newDirty = currentHash !== cleanBaselineHash;
+  if (newDirty !== isDirty) {
+    isDirty = newDirty;
+    updateDirtyUI();
+  }
+}
+
+function triggerDirtyCheckDebounced() {
+  if (dirtyCheckTimer) clearTimeout(dirtyCheckTimer);
+  dirtyCheckTimer = setTimeout(performDirtyCheck, 350);
+}
+
+// Fetch Workflows List from ComfyUI userdata
+async function fetchWorkflowsList() {
+  try {
+    const resp = await api.fetchApi("/userdata?dir=workflows&recurse=true&split=false&full_info=true");
+    if (resp.status === 200) {
+      treeItems = await resp.json();
+    }
+  } catch (e) {
+    console.error("[WorkflowVersion] Error fetching workflows list:", e);
+  }
+}
+
+// Build hierarchical folder/file tree
+function buildFileTree(items, query = "") {
+  const root = { name: "root", isFolder: true, relPath: "", children: {}, files: [] };
+  const lowerQuery = query.trim().toLowerCase();
+
+  for (const item of items) {
+    let rawPath = (item.path || "").replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!rawPath || rawPath.startsWith(".workflow_versions") || rawPath.startsWith(".")) {
+      continue;
+    }
+
+    const isExplicitDir = rawPath.endsWith("/");
+    if (isExplicitDir) rawPath = rawPath.slice(0, -1);
+
+    const parts = rawPath.split("/");
+
+    let curr = root;
+    for (let i = 0; i < parts.length - (isExplicitDir ? 0 : 1); i++) {
+      const part = parts[i];
+      if (!part) continue;
+      const subRel = parts.slice(0, i + 1).join("/");
+      if (!curr.children[part]) {
+        curr.children[part] = {
+          name: part,
+          relPath: subRel,
+          isFolder: true,
+          children: {},
+          files: []
         };
       }
+      curr = curr.children[part];
     }
-  } catch (e) {}
 
-  const raw = getCurrentWorkflowNameFallback();
-  return {
-    relPath: raw,
-    baseName: raw,
-    folder: "",
-    displayName: raw
-  };
+    if (!isExplicitDir) {
+      const fileName = parts[parts.length - 1];
+      if (fileName.endsWith(".json")) {
+        curr.files.push({
+          name: fileName,
+          relPath: rawPath,
+          isFolder: false,
+          size: item.size,
+          modified: item.modified
+        });
+      }
+    }
+  }
+
+  // Convert map children to sorted array
+  function toArrayNode(node) {
+    const folderList = Object.values(node.children)
+      .map(toArrayNode)
+      .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+
+    const fileList = node.files.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+
+    // If query is present, filter
+    let visibleFolders = folderList;
+    let visibleFiles = fileList;
+    if (lowerQuery) {
+      visibleFiles = fileList.filter((f) => f.name.toLowerCase().includes(lowerQuery));
+      visibleFolders = folderList.filter((f) => f.name.toLowerCase().includes(lowerQuery) || f.files.length > 0 || f.children.length > 0);
+    }
+
+    const totalCount = visibleFiles.length + visibleFolders.reduce((acc, c) => acc + c.totalCount, 0);
+
+    return {
+      name: node.name,
+      relPath: node.relPath,
+      isFolder: true,
+      children: visibleFolders,
+      files: visibleFiles,
+      totalCount
+    };
+  }
+
+  return toArrayNode(root);
 }
 
-function getCurrentWorkflowName() {
-  return getCurrentWorkflowInfo().relPath;
-}
-
-// Fallback: extract from active tab DOM or document title
-function getCurrentWorkflowNameFallback() {
+// Fetch version history for current active workflow
+async function fetchHistory(filename) {
+  if (!filename) {
+    historyList = [];
+    historyPage = 1;
+    updateHistoryUI();
+    return;
+  }
   try {
-    // 1. Prioritize PrimeVue active workflow tab: .p-togglebutton-checked .workflow-tab
-    const activeTab = document.querySelector(".p-togglebutton-checked .workflow-tab");
-    if (activeTab) {
-      const span = activeTab.querySelector("span");
-      const text = span ? span.textContent : activeTab.textContent;
-      const parsed = cleanWorkflowName(text);
-      if (parsed) {
-        lastKnownWorkflowName = parsed;
-        return parsed;
-      }
+    const resp = await fetch(`/workflow-git/history?filename=${encodeURIComponent(filename)}`);
+    const data = await resp.json();
+    if (data.success) {
+      historyList = data.history || [];
+      historyPage = 1;
+    } else {
+      historyList = [];
     }
-
-    // 2. Any active tab or workflow tab element
-    const tabEls = document.querySelectorAll(".workflow-tab, [class*='workflow-tab']");
-    for (const el of tabEls) {
-      if (el.closest(".p-togglebutton-checked") || el.classList.contains("active")) {
-        const span = el.querySelector("span") || el;
-        const parsed = cleanWorkflowName(span.textContent);
-        if (parsed) {
-          lastKnownWorkflowName = parsed;
-          return parsed;
-        }
-      }
-    }
-
-    // 3. Document title fallback ONLY IF it's not a progress indicator
-    if (document.title) {
-      let title = document.title.replace(/\s*-\s*ComfyUI.*$/i, "").trim();
-      const parsed = cleanWorkflowName(title);
-      if (parsed) {
-        lastKnownWorkflowName = parsed;
-        return parsed;
-      }
-    }
-  } catch (e) {}
-
-  return lastKnownWorkflowName || "workflow.json";
-}
-
-// Compute semantic graph fingerprint ignoring viewport pan/zoom (ds) and volatile canvas state
-function getGraphFingerprint(graph) {
-  if (!graph || typeof graph !== "object") return "";
-  try {
-    const copy = JSON.parse(JSON.stringify(graph));
-    // Strip canvas viewport offset/scale so zooming/panning doesn't count as dirty
-    if (copy.extra && copy.extra.ds) {
-      delete copy.extra.ds;
-    }
-    if (copy.extra && copy.extra.ue_properties) {
-      delete copy.extra.ue_properties;
-    }
-    // Normalize nodes ordering by ID for deterministic comparison
-    if (Array.isArray(copy.nodes)) {
-      copy.nodes.sort((a, b) => {
-        const idA = typeof a.id === "number" ? a.id : String(a.id || "");
-        const idB = typeof b.id === "number" ? b.id : String(b.id || "");
-        return idA > idB ? 1 : -1;
-      });
-    }
-    return JSON.stringify(copy);
   } catch (e) {
-    return "";
+    historyList = [];
   }
+  updateHistoryUI();
 }
 
-class SidebarVersionIntegration {
-  constructor() {
-    this.isProcessing = false;
-    this.currentWorkflowName = "";
-    this.activeVersionHash = "";
-    this.lastCleanFingerprint = "";
-    this.isDirty = false;
-    this.currentPage = 1;
-    this.pageSize = 5;
-    this.allHistoryItems = [];
-    this.init();
-  }
-
-  init() {
-    window.__sidebarVersionIntegration = this;
-    this.hookFetchForRename();
-
-    // Listen for tab navigation clicks to inject UI when Workflows drawer opens
-    document.addEventListener("click", (e) => {
-      const target = e.target.closest("button, [class*='tab'], [class*='icon'], [class*='nav'], [class*='sidebar']");
-      if (target) {
-        setTimeout(() => this.safeInject(), 150);
-        setTimeout(() => this.safeInject(), 600);
-      }
-    });
-
-    // Check on startup
-    setTimeout(() => this.safeInject(), 800);
-    setTimeout(() => this.safeInject(), 2000);
-
-    // Periodically check for active workflow name switch and semantic modifications every 800ms
-    setInterval(() => {
-      this.checkWorkflowSwitch();
-      this.checkDirtyState();
-    }, 800);
-  }
-
-  hookFetchForRename() {
-    try {
-      const origFetch = window.fetch;
-      const self = this;
-      window.fetch = async function(...args) {
-        const resp = await origFetch.apply(this, args);
-        try {
-          const url = typeof args[0] === "string" ? args[0] : (args[0] && args[0].url ? args[0].url : "");
-          if (url.includes("/move/") && url.includes("/userdata/")) {
-            setTimeout(() => {
-              self.checkWorkflowSwitch(true);
-            }, 300);
-          }
-        } catch (e) {}
-        return resp;
-      };
-    } catch (e) {
-      console.warn("[WorkflowVersion] Failed to hook fetch for rename:", e);
-    }
-  }
-
-  checkWorkflowSwitch(force = false) {
-    if (this.isProcessing) return;
-    try {
-      const info = getCurrentWorkflowInfo();
-      const activeName = info.relPath;
-      if (!activeName) return;
-
-      const commitBar = document.querySelector("#wfg-sidebar-commit-bar");
-      if (!commitBar) return;
-
-      const nameEl = commitBar.querySelector("#wfg-current-file-name");
-      const currentRel = nameEl ? nameEl.getAttribute("data-rel-path") || nameEl.textContent.trim() : "";
-
-      if (force || activeName !== this.currentWorkflowName || activeName !== currentRel) {
-        if (nameEl) {
-          nameEl.textContent = info.displayName;
-          nameEl.title = activeName;
-          nameEl.setAttribute("data-rel-path", activeName);
-        }
-        this.syncActiveWorkflowMetadata(activeName, commitBar);
-      }
-    } catch (e) {}
-  }
-
-  checkDirtyState() {
-    if (!app.graph || this.isProcessing) return;
-    try {
-      const currentFingerprint = getGraphFingerprint(app.graph.serialize());
-      if (!currentFingerprint) return;
-
-      if (!this.lastCleanFingerprint) {
-        this.lastCleanFingerprint = currentFingerprint;
-        this.isDirty = false;
-        this.updateDirtyIndicator();
-        return;
-      }
-
-      const dirty = currentFingerprint !== this.lastCleanFingerprint;
-      if (dirty !== this.isDirty) {
-        this.isDirty = dirty;
-        this.updateDirtyIndicator();
-      }
-    } catch (e) {}
-  }
-
-  updateDirtyIndicator() {
-    const badgeEl = document.querySelector("#wfg-version-badge");
-    const dirtyEl = document.querySelector("#wfg-dirty-pill");
-    const commitBtn = document.querySelector("#wfg-quick-commit-btn");
-
-    if (badgeEl) {
-      badgeEl.textContent = this.activeVersionHash ? `#${this.activeVersionHash}` : "无快照";
-      badgeEl.title = this.activeVersionHash ? `当前基底版本: #${this.activeVersionHash}` : "当前尚未保存快照";
-    }
-
-    if (dirtyEl) {
-      if (this.isDirty) {
-        dirtyEl.className = "wfg-dirty-pill dirty";
-        dirtyEl.innerHTML = `● 已修改`;
-        dirtyEl.title = "当前画布与快照版本不一致，有改动可提交";
-      } else {
-        dirtyEl.className = "wfg-dirty-pill clean";
-        dirtyEl.innerHTML = `✔ 干净`;
-        dirtyEl.title = "当前画布与该快照版本完全一致";
-      }
-    }
-
-    if (commitBtn) {
-      if (this.isDirty) {
-        commitBtn.classList.add("has-changes");
-        commitBtn.textContent = "✔ 保存修改";
-      } else {
-        commitBtn.classList.remove("has-changes");
-        commitBtn.textContent = "✔ 保存";
-      }
-    }
-  }
-
-  safeInject() {
-    if (this.isProcessing) return;
-    this.isProcessing = true;
-    try {
-      this.doInject();
-    } catch (e) {
-      console.warn("[WorkflowVersion] Safe inject error:", e);
-    } finally {
-      this.isProcessing = false;
-    }
-  }
-
-  doInject() {
-    // 1. Find the search input in Workflows drawer
-    const inputs = document.querySelectorAll("input");
-    let searchInput = null;
-    for (const input of inputs) {
-      const ph = (input.placeholder || "").toLowerCase();
-      if (ph.includes("工作流") || ph.includes("workflow")) {
-        searchInput = input;
-        break;
-      }
-    }
-
-    if (!searchInput) return;
-
-    // Find enclosing drawer panel
-    const panel = searchInput.closest("[class*='content'], [class*='panel'], [class*='sidebar']") || searchInput.parentElement?.parentElement;
-    if (!panel) return;
-
-    // 2. Inject Quick Commit & History Bar strictly into its own container
-    this.injectQuickCommitBar(searchInput, panel);
-  }
-
-  async syncActiveWorkflowMetadata(fileName, commitBar) {
-    this.currentWorkflowName = fileName;
-    this.currentPage = 1;
-    try {
-      const res = await fetch(`/workflow-git/history?file=${encodeURIComponent(fileName)}&limit=100`);
-      const data = await res.json();
-      this.allHistoryItems = (data.success && data.history) ? data.history : [];
-      if (this.allHistoryItems.length > 0) {
-        this.activeVersionHash = this.allHistoryItems[0].short_hash;
-      } else {
-        this.activeVersionHash = "";
-      }
-    } catch (e) {
-      this.allHistoryItems = [];
-      this.activeVersionHash = "";
-    }
-
-    if (app.graph) {
-      this.lastCleanFingerprint = getGraphFingerprint(app.graph.serialize());
-    }
-    this.isDirty = false;
-    this.updateDirtyIndicator();
-
-    if (commitBar) {
-      this.renderHistoryPage(commitBar, fileName);
-    }
-  }
-
-  injectQuickCommitBar(searchInput, panel) {
-    let commitBar = panel.querySelector("#wfg-sidebar-commit-bar");
-    const info = getCurrentWorkflowInfo();
-    const currentName = info.relPath;
-
-    if (commitBar) {
-      const nameEl = commitBar.querySelector("#wfg-current-file-name");
-      const currentRel = nameEl ? nameEl.getAttribute("data-rel-path") || nameEl.textContent.trim() : "";
-      if (nameEl && (currentRel !== currentName || nameEl.textContent !== info.displayName)) {
-        nameEl.textContent = info.displayName;
-        nameEl.title = currentName;
-        nameEl.setAttribute("data-rel-path", currentName);
-        this.syncActiveWorkflowMetadata(currentName, commitBar);
-      }
+// Open / Load workflow into ComfyUI canvas
+async function openWorkflow(relPath) {
+  try {
+    const resp = await api.getUserData("workflows/" + relPath);
+    if (resp.status !== 200) {
+      showToast(`载入工作流失败: ${resp.statusText}`);
       return;
     }
+    const graphData = await resp.json();
+    await app.loadGraphData(graphData);
 
-    commitBar = document.createElement("div");
-    commitBar.id = "wfg-sidebar-commit-bar";
-    commitBar.className = "wfg-sidebar-commit-container";
+    // Sync with ComfyUI native workflow store if available
+    try {
+      const wfStore = app.extensionManager?.workflow;
+      if (wfStore) {
+        const item = wfStore.getWorkflowByPath?.("workflows/" + relPath);
+        if (item) {
+          await wfStore.openWorkflow(item);
+        }
+      }
+    } catch (e) {}
 
-    commitBar.innerHTML = `
-      <div class="wfg-action-toolbar">
-        <button id="wfg-btn-new-folder" class="wfg-tool-btn" title="在工作流目录新建文件夹">
-          📁+ 新建文件夹
-        </button>
-        <button id="wfg-btn-new-workflow" class="wfg-tool-btn" title="新建空白工作流">
-          📄+ 新建工作流
-        </button>
-        <button id="wfg-btn-refresh-tree" class="wfg-tool-btn" title="刷新工作流与文件夹树">
-          🔄 刷新列表
-        </button>
-      </div>
-      <div class="wfg-sidebar-commit-header">
-        <div class="wfg-sidebar-file-badge">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <circle cx="18" cy="18" r="3"></circle>
-            <circle cx="6" cy="6" r="3"></circle>
-            <path d="M13 6h3a2 2 0 0 1 2 2v7"></path>
-            <line x1="6" y1="9" x2="6" y2="21"></line>
-          </svg>
-          <span id="wfg-current-file-name" data-rel-path="${currentName}" title="${currentName}">${info.displayName}</span>
+    currentActiveWorkflow = relPath;
+    setCleanBaseline(graphData);
+    await fetchHistory(relPath);
+    updateActiveCardUI();
+    renderTree();
+    showToast(`已载入: ${relPath.split("/").pop()}`);
+  } catch (err) {
+    showToast(`载入失败: ${err.message}`);
+  }
+}
+
+// Create new workflow in folder
+async function createNewWorkflow(parentFolder = "") {
+  const name = prompt("请输入新工作流名称:", "新工作流");
+  if (!name || !name.trim()) return;
+  const cleanName = name.trim().endsWith(".json") ? name.trim() : `${name.trim()}.json`;
+  const relPath = parentFolder ? `${parentFolder}/${cleanName}` : cleanName;
+
+  const defaultGraph = {
+    last_node_id: 1,
+    last_link_id: 0,
+    nodes: [],
+    links: [],
+    groups: [],
+    config: {},
+    extra: {},
+    version: 0.4
+  };
+
+  try {
+    await api.storeUserData("workflows/" + relPath, JSON.stringify(defaultGraph), { overwrite: false });
+    await fetchWorkflowsList();
+    if (parentFolder) expandedFolders.add(parentFolder);
+    await openWorkflow(relPath);
+    showToast(`已创建工作流: ${cleanName}`);
+  } catch (e) {
+    showToast(`创建失败: ${e.message}`);
+  }
+}
+
+// Create new folder
+async function createNewFolder(parentFolder = "") {
+  const name = prompt("请输入文件夹名称:", "新建文件夹");
+  if (!name || !name.trim()) return;
+  const folderName = name.trim().replace(/[\\\/]/g, "");
+  const targetFolder = parentFolder ? `${parentFolder}/${folderName}` : folderName;
+
+  try {
+    const resp = await fetch("/workflow-git/folder/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder: targetFolder })
+    });
+    const data = await resp.json();
+    if (data.success) {
+      expandedFolders.add(targetFolder);
+      if (parentFolder) expandedFolders.add(parentFolder);
+      await fetchWorkflowsList();
+      renderTree();
+      showToast(`已创建文件夹: ${folderName}`);
+    } else {
+      alert(data.error || "创建文件夹失败");
+    }
+  } catch (e) {
+    showToast(`创建失败: ${e.message}`);
+  }
+}
+
+// Rename folder
+async function renameFolder(oldFolder) {
+  const oldBase = oldFolder.split("/").pop();
+  const newName = prompt("请输入新文件夹名称:", oldBase);
+  if (!newName || !newName.trim() || newName.trim() === oldBase) return;
+  const parent = oldFolder.includes("/") ? oldFolder.slice(0, oldFolder.lastIndexOf("/")) : "";
+  const newFolder = parent ? `${parent}/${newName.trim()}` : newName.trim();
+
+  try {
+    const resp = await fetch("/workflow-git/folder/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ src: oldFolder, dst: newFolder })
+    });
+    const data = await resp.json();
+    if (data.success) {
+      if (currentActiveWorkflow && currentActiveWorkflow.startsWith(oldFolder + "/")) {
+        currentActiveWorkflow = currentActiveWorkflow.replace(oldFolder + "/", newFolder + "/");
+      }
+      expandedFolders.delete(oldFolder);
+      expandedFolders.add(newFolder);
+      await fetchWorkflowsList();
+      renderTree();
+      updateActiveCardUI();
+      showToast(`已重命名: ${newName.trim()}`);
+    } else {
+      alert(data.error || "重命名失败");
+    }
+  } catch (e) {
+    showToast(`操作失败: ${e.message}`);
+  }
+}
+
+// Delete folder
+async function deleteFolder(folderPath) {
+  if (!confirm(`确定要删除文件夹 "${folderPath}" 及其全部内容和历史版本吗？此操作不可撤销！`)) return;
+  try {
+    const resp = await fetch("/workflow-git/folder/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder: folderPath })
+    });
+    const data = await resp.json();
+    if (data.success) {
+      if (currentActiveWorkflow && currentActiveWorkflow.startsWith(folderPath + "/")) {
+        currentActiveWorkflow = null;
+        updateActiveCardUI();
+      }
+      expandedFolders.delete(folderPath);
+      await fetchWorkflowsList();
+      renderTree();
+      showToast(`已删除文件夹: ${folderPath}`);
+    } else {
+      alert(data.error || "删除失败");
+    }
+  } catch (e) {
+    showToast(`删除失败: ${e.message}`);
+  }
+}
+
+// Rename workflow file
+async function renameWorkflow(oldRelPath) {
+  const oldBase = oldRelPath.split("/").pop().replace(/\.json$/, "");
+  const newBase = prompt("请输入新的工作流名称:", oldBase);
+  if (!newBase || !newBase.trim() || newBase.trim() === oldBase) return;
+  const newFileName = newBase.trim() + ".json";
+  const parent = oldRelPath.includes("/") ? oldRelPath.slice(0, oldRelPath.lastIndexOf("/")) : "";
+  const newRelPath = parent ? `${parent}/${newFileName}` : newFileName;
+
+  try {
+    const resp = await fetch("/workflow-git/move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ src: oldRelPath, dst: newRelPath })
+    });
+    const data = await resp.json();
+    if (data.success) {
+      if (currentActiveWorkflow === oldRelPath) {
+        currentActiveWorkflow = newRelPath;
+      }
+      await fetchWorkflowsList();
+      renderTree();
+      updateActiveCardUI();
+      showToast(`已重命名: ${newFileName}`);
+    } else {
+      alert(data.error || "重命名失败");
+    }
+  } catch (e) {
+    showToast(`重命名失败: ${e.message}`);
+  }
+}
+
+// Duplicate workflow file
+async function duplicateWorkflow(relPath) {
+  try {
+    const resp = await api.getUserData("workflows/" + relPath);
+    if (resp.status !== 200) {
+      showToast("读取工作流失败");
+      return;
+    }
+    const content = await resp.text();
+    const dir = relPath.includes("/") ? relPath.slice(0, relPath.lastIndexOf("/")) : "";
+    const baseName = relPath.split("/").pop().replace(/\.json$/, "");
+    const newName = `${baseName} (副本).json`;
+    const newRelPath = dir ? `${dir}/${newName}` : newName;
+
+    await api.storeUserData("workflows/" + newRelPath, content, { overwrite: false });
+    await fetchWorkflowsList();
+    renderTree();
+    showToast(`已创建副本: ${newName}`);
+  } catch (e) {
+    showToast(`复制失败: ${e.message}`);
+  }
+}
+
+// Delete workflow file
+async function deleteWorkflow(relPath) {
+  if (!confirm(`确定要彻底删除工作流 "${relPath}" 吗？其版本历史也将被清除！`)) return;
+  try {
+    await api.deleteUserData("workflows/" + relPath);
+    await fetch("/workflow-git/delete-workflow", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: relPath })
+    }).catch(() => {});
+
+    if (currentActiveWorkflow === relPath) {
+      currentActiveWorkflow = null;
+      updateActiveCardUI();
+    }
+    await fetchWorkflowsList();
+    renderTree();
+    showToast(`已删除: ${relPath}`);
+  } catch (e) {
+    showToast(`删除失败: ${e.message}`);
+  }
+}
+
+// Move workflow item via drag & drop
+async function moveWorkflowItem(srcRelPath, targetFolder) {
+  const fileName = srcRelPath.split("/").pop();
+  const dstRelPath = targetFolder ? `${targetFolder}/${fileName}` : fileName;
+  if (srcRelPath === dstRelPath) return;
+
+  try {
+    const resp = await fetch("/workflow-git/move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ src: srcRelPath, dst: dstRelPath })
+    });
+    const data = await resp.json();
+    if (data.success) {
+      if (currentActiveWorkflow === srcRelPath) {
+        currentActiveWorkflow = dstRelPath;
+      }
+      if (targetFolder) expandedFolders.add(targetFolder);
+      await fetchWorkflowsList();
+      renderTree();
+      updateActiveCardUI();
+      showToast(`已移动到: ${targetFolder || "根目录"}`);
+    } else {
+      alert(data.error || "移动失败");
+    }
+  } catch (e) {
+    showToast(`移动失败: ${e.message}`);
+  }
+}
+
+// Commit new version
+async function commitActiveWorkflow(message) {
+  if (!currentActiveWorkflow) {
+    showToast("没有处于激活状态的工作流");
+    return;
+  }
+  const cleanGraph = getNormalizedGraphData();
+  if (!cleanGraph) {
+    showToast("无法获取当前画布数据");
+    return;
+  }
+
+  const msg = (message || "").trim() || "版本更新";
+  try {
+    const resp = await fetch("/workflow-git/commit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: currentActiveWorkflow,
+        message: msg,
+        data: cleanGraph
+      })
+    });
+    const result = await resp.json();
+    if (result.success) {
+      showToast(`已保存版本: #${result.hash.slice(0, 7)}`);
+      setCleanBaseline(cleanGraph);
+      await fetchHistory(currentActiveWorkflow);
+    } else {
+      alert(result.error || "保存失败");
+    }
+  } catch (e) {
+    showToast(`保存失败: ${e.message}`);
+  }
+}
+
+// Restore specific version
+async function restoreVersion(hash) {
+  if (!currentActiveWorkflow) return;
+  try {
+    const resp = await fetch("/workflow-git/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: currentActiveWorkflow,
+        hash: hash
+      })
+    });
+    const result = await resp.json();
+    if (result.success && result.data) {
+      await app.loadGraphData(result.data);
+      setCleanBaseline(result.data);
+      await fetchHistory(currentActiveWorkflow);
+      showToast(`已载入版本: #${hash.slice(0, 7)}`);
+    } else {
+      alert(result.error || "载入版本失败");
+    }
+  } catch (e) {
+    showToast(`载入版本失败: ${e.message}`);
+  }
+}
+
+// Delete specific version
+async function deleteVersion(hash) {
+  if (!currentActiveWorkflow) return;
+  if (!confirm(`确定要删除版本 #${hash.slice(0, 7)} 吗？`)) return;
+  try {
+    const resp = await fetch("/workflow-git/delete-version", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: currentActiveWorkflow,
+        hash: hash
+      })
+    });
+    const result = await resp.json();
+    if (result.success) {
+      showToast(`已删除版本: #${hash.slice(0, 7)}`);
+      await fetchHistory(currentActiveWorkflow);
+    } else {
+      alert(result.error || "删除版本失败");
+    }
+  } catch (e) {
+    showToast(`删除版本失败: ${e.message}`);
+  }
+}
+
+// UI Update functions
+function updateDirtyUI() {
+  const dirtyBadge = mountedPanel?.querySelector(".wfg-dirty-badge");
+  if (!dirtyBadge) return;
+  if (isDirty) {
+    dirtyBadge.className = "wfg-dirty-badge dirty";
+    dirtyBadge.innerHTML = "<span>●</span> 已修改";
+  } else {
+    dirtyBadge.className = "wfg-dirty-badge clean";
+    dirtyBadge.innerHTML = "<span>✓</span> 干净";
+  }
+}
+
+function updateActiveCardUI() {
+  if (!mountedPanel) return;
+  const card = mountedPanel.querySelector(".wfg-version-card");
+  if (!card) return;
+
+  if (!currentActiveWorkflow) {
+    card.style.display = "none";
+    return;
+  }
+  card.style.display = "block";
+
+  const titleEl = card.querySelector(".wfg-active-file-title");
+  if (titleEl) {
+    titleEl.innerHTML = `<span class="pi pi-code-branch"></span> <span>${currentActiveWorkflow}</span>`;
+  }
+
+  const hashBadge = card.querySelector(".wfg-version-hash-badge");
+  if (hashBadge) {
+    const latest = historyList[0];
+    if (latest && latest.hash) {
+      hashBadge.textContent = `#${latest.hash.slice(0, 7)}`;
+      hashBadge.style.display = "inline-block";
+    } else {
+      hashBadge.style.display = "none";
+    }
+  }
+
+  updateDirtyUI();
+  updateHistoryUI();
+}
+
+function updateHistoryUI() {
+  if (!mountedPanel) return;
+  const listEl = mountedPanel.querySelector(".wfg-history-list");
+  const paginationEl = mountedPanel.querySelector(".wfg-pagination");
+  if (!listEl || !paginationEl) return;
+
+  if (!historyList || historyList.length === 0) {
+    listEl.innerHTML = `<div style="text-align: center; color: #71717a; padding: 12px; font-size: 11px;">暂无保存的历史版本</div>`;
+    paginationEl.style.display = "none";
+    return;
+  }
+
+  paginationEl.style.display = "flex";
+  const totalPages = Math.ceil(historyList.length / historyPageSize) || 1;
+  if (historyPage > totalPages) historyPage = totalPages;
+  if (historyPage < 1) historyPage = 1;
+
+  const startIdx = (historyPage - 1) * historyPageSize;
+  const pagedItems = historyList.slice(startIdx, startIdx + historyPageSize);
+  const latestHash = historyList[0]?.hash;
+
+  listEl.innerHTML = "";
+  pagedItems.forEach((ver) => {
+    const isBase = ver.hash === latestHash;
+    const item = document.createElement("div");
+    item.className = `wfg-history-item ${isBase ? "current-base" : ""}`;
+
+    const dateStr = ver.date ? new Date(ver.date).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+    item.innerHTML = `
+      <div class="wfg-history-info">
+        <div class="wfg-history-msg" title="${ver.message}">${ver.message || "无说明"}</div>
+        <div class="wfg-history-meta">
+          <span class="hash">#${ver.hash.slice(0, 7)}</span>
+          ${isBase ? '<span class="base-tag">当前基底</span>' : ""}
+          <span>${dateStr}</span>
         </div>
-        <div class="wfg-sidebar-header-right">
-          <span class="wfg-version-badge" id="wfg-version-badge">版本</span>
-          <span class="wfg-dirty-pill clean" id="wfg-dirty-pill">✔ 干净</span>
-        </div>
       </div>
-      <div class="wfg-sidebar-input-row">
-        <input
-          type="text"
-          id="wfg-quick-msg"
-          class="wfg-sidebar-commit-input"
-          placeholder="版本修改说明 (Enter 保存)..."
-        />
-        <button id="wfg-quick-commit-btn" class="wfg-sidebar-commit-btn" title="保存当前工作流新版本">
-          ✔ 保存
-        </button>
-      </div>
-      <div id="wfg-sidebar-history-container" class="wfg-sidebar-history-container">
-        <div id="wfg-sidebar-history-list" class="wfg-sidebar-history-list"></div>
-        <div id="wfg-sidebar-pagination" class="wfg-sidebar-pagination">
-          <button id="wfg-page-prev" class="wfg-page-btn" title="上一页">◀ 上一页</button>
-          <span id="wfg-page-info" class="wfg-page-info">1 / 1</span>
-          <button id="wfg-page-next" class="wfg-page-btn" title="下一页">下一页 ▶</button>
-        </div>
-      </div>
-      <div id="wfg-root-drop-zone" class="wfg-root-drop-zone">
-        📥 拖拽到此处移动到【根目录】
+      <div class="wfg-history-actions">
+        ${isBase ? '<span class="wfg-history-btn" style="cursor: default; opacity: 0.6;">当前</span>' : `<button class="wfg-history-btn load" data-hash="${ver.hash}">载入</button>`}
+        <button class="wfg-history-btn delete" data-hash="${ver.hash}" title="删除该版本">🗑️</button>
       </div>
     `;
 
-    // Place right below search box
-    const anchor = searchInput.closest(".search-container, .input-container, [class*='search']") || searchInput.parentElement;
-    if (anchor && anchor.parentElement) {
-      anchor.parentElement.insertBefore(commitBar, anchor.nextSibling);
-    } else {
-      panel.insertBefore(commitBar, panel.firstChild);
+    item.querySelector(".load")?.addEventListener("click", () => restoreVersion(ver.hash));
+    item.querySelector(".delete")?.addEventListener("click", () => deleteVersion(ver.hash));
+    listEl.appendChild(item);
+  });
+
+  paginationEl.innerHTML = `
+    <button class="wfg-page-btn prev" ${historyPage <= 1 ? "disabled" : ""}>◀ 上一页</button>
+    <span>${historyPage} / ${totalPages} (${historyList.length}条)</span>
+    <button class="wfg-page-btn next" ${historyPage >= totalPages ? "disabled" : ""}>下一页 ▶</button>
+  `;
+
+  paginationEl.querySelector(".prev")?.addEventListener("click", () => {
+    if (historyPage > 1) {
+      historyPage--;
+      updateHistoryUI();
     }
-
-    const input = commitBar.querySelector("#wfg-quick-msg");
-    const commitBtn = commitBar.querySelector("#wfg-quick-commit-btn");
-    const prevBtn = commitBar.querySelector("#wfg-page-prev");
-    const nextBtn = commitBar.querySelector("#wfg-page-next");
-
-    // Hook pagination buttons
-    prevBtn.onclick = () => {
-      if (this.currentPage > 1) {
-        this.currentPage--;
-        this.renderHistoryPage(commitBar, getCurrentWorkflowName());
-      }
-    };
-
-    nextBtn.onclick = () => {
-      const totalPages = Math.max(1, Math.ceil(this.allHistoryItems.length / this.pageSize));
-      if (this.currentPage < totalPages) {
-        this.currentPage++;
-        this.renderHistoryPage(commitBar, getCurrentWorkflowName());
-      }
-    };
-
-    // Hook toolbar buttons
-    const btnNewFolder = commitBar.querySelector("#wfg-btn-new-folder");
-    const btnNewWorkflow = commitBar.querySelector("#wfg-btn-new-workflow");
-    const btnRefreshTree = commitBar.querySelector("#wfg-btn-refresh-tree");
-
-    if (btnNewFolder) btnNewFolder.onclick = () => this.promptCreateFolder();
-    if (btnNewWorkflow) btnNewWorkflow.onclick = () => this.promptCreateWorkflow();
-    if (btnRefreshTree) {
-      btnRefreshTree.onclick = async () => {
-        await triggerComfySyncWorkflows();
-        showToast("🔄 工作流列表已刷新");
-      };
+  });
+  paginationEl.querySelector(".next")?.addEventListener("click", () => {
+    if (historyPage < totalPages) {
+      historyPage++;
+      updateHistoryUI();
     }
+  });
+}
 
-    // Setup right click context menu & drag and drop
-    this.setupContextMenu(panel);
-    this.setupDragAndDrop(panel);
+// Render Folder Tree DOM
+function renderTree() {
+  if (!mountedPanel) return;
+  const container = mountedPanel.querySelector(".wfg-tree-container");
+  if (!container) return;
 
-    // Initialize version metadata and render initial list
-    this.syncActiveWorkflowMetadata(currentName, commitBar);
+  const treeData = buildFileTree(treeItems, searchQuery);
+  container.innerHTML = "";
 
-    // Save snapshot logic
-    const doCommit = async () => {
-      const msg = input.value.trim();
-      if (!msg) {
-        input.focus();
-        return;
-      }
-      const fileName = getCurrentWorkflowName();
-      try {
-        commitBtn.disabled = true;
-        commitBtn.textContent = "保存中...";
-
-        const workflowData = app.graph.serialize();
-        const res = await fetch("/workflow-git/commit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            file_name: fileName,
-            message: msg,
-            workflow: workflowData
-          })
-        });
-
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error);
-
-        this.activeVersionHash = data.commit_hash;
-        this.lastCleanFingerprint = getGraphFingerprint(workflowData);
-        this.isDirty = false;
-        this.currentPage = 1;
-        this.updateDirtyIndicator();
-
-        showToast(`✔ 已保存版本 [#${data.commit_hash}]: ${msg}`);
-        input.value = "";
-
-        // Reload history list fresh from server
-        this.loadHistoryList(commitBar, fileName);
-      } catch (e) {
-        alert(`保存版本失败: ${e.message}`);
-      } finally {
-        commitBtn.disabled = false;
-        this.updateDirtyIndicator();
-      }
-    };
-
-    commitBtn.onclick = doCommit;
-    input.onkeydown = (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        doCommit();
-      }
-    };
+  if (treeData.children.length === 0 && treeData.files.length === 0) {
+    container.innerHTML = `<div class="wfg-tree-empty">${searchQuery ? "未找到匹配的工作流" : "暂无工作流文件"}</div>`;
+    return;
   }
 
-  async loadHistoryList(commitBar, fileName) {
-    try {
-      const res = await fetch(`/workflow-git/history?file=${encodeURIComponent(fileName)}&limit=100`);
-      const data = await res.json();
-      this.allHistoryItems = (data.success && data.history) ? data.history : [];
-    } catch (e) {
-      this.allHistoryItems = [];
-    }
-    this.renderHistoryPage(commitBar, fileName);
-  }
+  // Allow drop on root
+  container.ondragover = (e) => {
+    e.preventDefault();
+  };
+  container.ondrop = async (e) => {
+    e.preventDefault();
+    const src = e.dataTransfer.getData("text/plain");
+    if (src) await moveWorkflowItem(src, "");
+  };
 
-  renderHistoryPage(commitBar, fileName) {
-    const listEl = commitBar.querySelector("#wfg-sidebar-history-list");
-    const pageInfo = commitBar.querySelector("#wfg-page-info");
-    const prevBtn = commitBar.querySelector("#wfg-page-prev");
-    const nextBtn = commitBar.querySelector("#wfg-page-next");
-    const paginationEl = commitBar.querySelector("#wfg-sidebar-pagination");
+  function renderSubTree(node, parentEl) {
+    // Render folders first
+    node.children.forEach((folder) => {
+      const isExpanded = expandedFolders.has(folder.relPath);
+      const folderNode = document.createElement("div");
+      folderNode.className = "wfg-tree-node";
 
-    if (!listEl) return;
-
-    const totalCount = this.allHistoryItems.length;
-    const totalPages = Math.max(1, Math.ceil(totalCount / this.pageSize));
-
-    if (this.currentPage > totalPages) this.currentPage = totalPages;
-    if (this.currentPage < 1) this.currentPage = 1;
-
-    // Update pagination controls
-    if (pageInfo) {
-      pageInfo.textContent = `${this.currentPage} / ${totalPages} (${totalCount}条)`;
-    }
-    if (prevBtn) prevBtn.disabled = this.currentPage <= 1;
-    if (nextBtn) nextBtn.disabled = this.currentPage >= totalPages;
-
-    if (paginationEl) {
-      paginationEl.style.display = totalCount > 0 ? "flex" : "none";
-    }
-
-    if (totalCount === 0) {
-      listEl.innerHTML = `<div style="font-size: 11px; color: #64748b; padding: 8px; text-align: center;">[${fileName}] 暂无历史版本</div>`;
-      return;
-    }
-
-    const startIndex = (this.currentPage - 1) * this.pageSize;
-    const pageItems = this.allHistoryItems.slice(startIndex, startIndex + this.pageSize);
-
-    listEl.innerHTML = "";
-    pageItems.forEach((commit) => {
-      const isCurrentActive = commit.short_hash === this.activeVersionHash;
-      const node = document.createElement("div");
-      node.className = `wfg-history-node ${isCurrentActive ? "is-active" : ""}`;
-      node.innerHTML = `
-        <div class="wfg-history-node-left">
-          <div class="wfg-history-node-msg" title="${commit.message}">${commit.message}</div>
-          <div class="wfg-history-node-meta">
-            <span class="wfg-history-node-hash">#${commit.short_hash}</span>
-            ${isCurrentActive ? `<span class="wfg-active-tag">当前基底</span>` : ""}
-            <span>${commit.date ? commit.date.split(" ")[0] : ""}</span>
-          </div>
-        </div>
-        <div class="wfg-history-node-actions">
-          <button class="wfg-history-restore-btn ${isCurrentActive && !this.isDirty ? "current" : ""}" title="将此版本载入当前画布">
-            ${isCurrentActive ? (this.isDirty ? "还原" : "当前") : "载入"}
-          </button>
-          <button class="wfg-history-delete-btn" title="删除此历史版本">
-            🗑️
-          </button>
-        </div>
+      const content = document.createElement("div");
+      content.className = "wfg-tree-item-content";
+      content.innerHTML = `
+        <span class="wfg-tree-arrow ${isExpanded ? "expanded" : ""}">▶</span>
+        <span class="wfg-tree-icon">${isExpanded ? "📂" : "📁"}</span>
+        <span class="wfg-tree-label">${folder.name}</span>
+        <span class="wfg-tree-badge">${folder.totalCount}</span>
       `;
 
-      // Restore button
-      node.querySelector(".wfg-history-restore-btn").onclick = async (e) => {
+      // Expand/Collapse click
+      content.onclick = (e) => {
         e.stopPropagation();
-        if (isCurrentActive && !this.isDirty) {
-          showToast(`当前画布已经是该版本 (#${commit.short_hash})`);
-          return;
+        if (expandedFolders.has(folder.relPath)) {
+          expandedFolders.delete(folder.relPath);
+        } else {
+          expandedFolders.add(folder.relPath);
         }
-
-        if (!confirm(`确定要将 [${fileName}] 恢复到版本 #${commit.short_hash} ("${commit.message}") 吗？当前画布改动将被覆盖。`)) {
-          return;
-        }
-
-        try {
-          this.isProcessing = true;
-          const checkoutRes = await fetch(`/workflow-git/checkout?hash=${commit.short_hash}&file=${encodeURIComponent(fileName)}`);
-          const checkoutData = await checkoutRes.json();
-          if (!checkoutData.success) throw new Error(checkoutData.error);
-
-          if (checkoutData.workflow) {
-            try {
-              await app.loadGraphData(checkoutData.workflow, true, true, fileName);
-            } catch (loadErr) {
-              if (app.graph && typeof app.graph.configure === "function") {
-                app.graph.configure(checkoutData.workflow);
-              } else {
-                app.loadGraphData(checkoutData.workflow);
-              }
-            }
-
-            this.activeVersionHash = commit.short_hash;
-
-            // Wait 350ms for canvas to stabilize, then capture clean baseline
-            setTimeout(() => {
-              if (app.graph) {
-                this.lastCleanFingerprint = getGraphFingerprint(app.graph.serialize());
-              } else {
-                this.lastCleanFingerprint = getGraphFingerprint(checkoutData.workflow);
-              }
-              this.isDirty = false;
-              this.isProcessing = false;
-              this.updateDirtyIndicator();
-              this.renderHistoryPage(commitBar, fileName);
-            }, 350);
-
-            showToast(`✔ 已载入 [${fileName}] 版本 (#${commit.short_hash})`);
-          }
-        } catch (err) {
-          this.isProcessing = false;
-          alert(`载入失败: ${err.message}`);
-        }
+        renderTree();
       };
 
-      // Delete button
-      node.querySelector(".wfg-history-delete-btn").onclick = async (e) => {
+      // Folder Context Menu
+      content.oncontextmenu = (e) => {
+        e.preventDefault();
         e.stopPropagation();
-        if (!confirm(`确定要删除历史版本 #${commit.short_hash} ("${commit.message}") 吗？此操作无法撤销。`)) {
-          return;
-        }
-
-        try {
-          const delRes = await fetch("/workflow-git/delete", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              file_name: fileName,
-              hash: commit.short_hash
-            })
-          });
-          const delData = await delRes.json();
-          if (!delData.success) throw new Error(delData.error || "删除失败");
-
-          showToast(`🗑️ 已删除版本 #${commit.short_hash}`);
-          if (this.activeVersionHash === commit.short_hash) {
-            this.activeVersionHash = "";
-            this.updateDirtyIndicator();
+        showContextMenu(e.clientX, e.clientY, [
+          {
+            icon: "📄",
+            label: "在此新建工作流",
+            onClick: () => createNewWorkflow(folder.relPath)
+          },
+          {
+            icon: "📁",
+            label: "在此新建子文件夹",
+            onClick: () => createNewFolder(folder.relPath)
+          },
+          { divider: true },
+          {
+            icon: "✏️",
+            label: "重命名文件夹",
+            onClick: () => renameFolder(folder.relPath)
+          },
+          {
+            icon: "🗑️",
+            label: "删除文件夹",
+            danger: true,
+            onClick: () => deleteFolder(folder.relPath)
           }
-          this.loadHistoryList(commitBar, fileName);
-        } catch (err) {
-          alert(`删除失败: ${err.message}`);
-        }
+        ]);
       };
 
-      listEl.appendChild(node);
+      // Folder Drag & Drop target
+      content.ondragover = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        content.classList.add("wfg-drag-over");
+      };
+      content.ondragleave = (e) => {
+        e.stopPropagation();
+        content.classList.remove("wfg-drag-over");
+      };
+      content.ondrop = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        content.classList.remove("wfg-drag-over");
+        const src = e.dataTransfer.getData("text/plain");
+        if (src) await moveWorkflowItem(src, folder.relPath);
+      };
+
+      folderNode.appendChild(content);
+
+      if (isExpanded) {
+        const childrenContainer = document.createElement("div");
+        childrenContainer.className = "wfg-tree-children";
+        renderSubTree(folder, childrenContainer);
+        folderNode.appendChild(childrenContainer);
+      }
+
+      parentEl.appendChild(folderNode);
+    });
+
+    // Render files
+    node.files.forEach((file) => {
+      const isActive = currentActiveWorkflow === file.relPath;
+      const fileNode = document.createElement("div");
+      fileNode.className = "wfg-tree-node";
+
+      const content = document.createElement("div");
+      content.className = `wfg-tree-item-content ${isActive ? "active" : ""}`;
+      content.draggable = true;
+      content.innerHTML = `
+        <span class="wfg-tree-arrow empty"></span>
+        <span class="wfg-tree-icon">📄</span>
+        <span class="wfg-tree-label" title="${file.relPath}">${file.name}</span>
+      `;
+
+      // Open on click
+      content.onclick = (e) => {
+        e.stopPropagation();
+        openWorkflow(file.relPath);
+      };
+
+      // File Context Menu
+      content.oncontextmenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        showContextMenu(e.clientX, e.clientY, [
+          {
+            icon: "📂",
+            label: "载入画布",
+            onClick: () => openWorkflow(file.relPath)
+          },
+          {
+            icon: "📋",
+            label: "复制副本",
+            onClick: () => duplicateWorkflow(file.relPath)
+          },
+          {
+            icon: "✏️",
+            label: "重命名工作流",
+            onClick: () => renameWorkflow(file.relPath)
+          },
+          { divider: true },
+          {
+            icon: "🗑️",
+            label: "删除工作流",
+            danger: true,
+            onClick: () => deleteWorkflow(file.relPath)
+          }
+        ]);
+      };
+
+      // Drag start
+      content.ondragstart = (e) => {
+        e.dataTransfer.setData("text/plain", file.relPath);
+        e.dataTransfer.effectAllowed = "move";
+      };
+
+      fileNode.appendChild(content);
+      parentEl.appendChild(fileNode);
     });
   }
 
-  async promptCreateFolder(parentFolder = "") {
-    const hint = parentFolder ? `在 [${parentFolder}] 下新建子文件夹名称:` : "请输入新文件夹名称 (例如: 动漫风格 或 SDXL/二次元):";
-    let name = prompt(hint);
-    if (!name) return;
-    name = name.trim().replace(/^[/\\*]+|[/\\*]+$/g, "");
-    if (!name) return;
+  renderSubTree(treeData, container);
+}
 
-    const fullPath = parentFolder ? `${parentFolder}/${name}` : name;
-    try {
-      const res = await fetch("/workflow-git/folder/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folder: fullPath })
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "创建文件夹失败");
+// Mount the custom panel inside ComfyUI sidebar slot
+function mountWorkflowGitPanel(rootEl) {
+  mountedPanel = rootEl;
+  rootEl.innerHTML = `
+    <div class="wfg-sidebar-root">
+      <!-- Header -->
+      <div class="wfg-header">
+        <div class="wfg-title">
+          <span class="pi pi-code-branch" style="font-size: 14px;"></span>
+          <span>工作流版本管理</span>
+        </div>
+        <div class="wfg-header-actions">
+          <button class="wfg-icon-btn btn-new-folder" title="新建文件夹">📁+ 文件夹</button>
+          <button class="wfg-icon-btn btn-new-workflow" title="新建工作流">📄+ 工作流</button>
+          <button class="wfg-icon-btn btn-refresh" title="刷新列表">🔄</button>
+        </div>
+      </div>
 
-      await triggerComfySyncWorkflows();
-      showToast(`📁 文件夹已创建: ${fullPath}`);
-    } catch (err) {
-      alert(`创建文件夹失败: ${err.message}`);
-    }
-  }
+      <!-- Search -->
+      <div class="wfg-search-container">
+        <div class="wfg-search-box">
+          <span class="pi pi-search" style="color: #71717a; font-size: 11px;"></span>
+          <input class="wfg-search-input" placeholder="搜索工作流..." value="${searchQuery}" />
+          <span class="wfg-search-clear" style="display: ${searchQuery ? "block" : "none"};">✕</span>
+        </div>
+      </div>
 
-  async promptCreateWorkflow(targetFolder = "") {
-    const hint = targetFolder ? `在 [${targetFolder}] 下新建工作流名称:` : "请输入新建工作流名称:";
-    let name = prompt(hint, "新工作流");
-    if (!name) return;
-    name = name.trim();
-    if (!name.endsWith(".json")) name += ".json";
+      <!-- Active Workflow Version Card -->
+      <div class="wfg-version-card" style="display: ${currentActiveWorkflow ? "block" : "none"};">
+        <div class="wfg-version-card-header">
+          <div class="wfg-active-file-title" title="${currentActiveWorkflow || ""}">
+            <span class="pi pi-code-branch"></span>
+            <span>${currentActiveWorkflow || ""}</span>
+          </div>
+          <div class="wfg-badges-right">
+            <span class="wfg-version-hash-badge">#------</span>
+            <span class="wfg-dirty-badge clean"><span>✓</span> 干净</span>
+          </div>
+        </div>
+        <div class="wfg-commit-row">
+          <input class="wfg-commit-input" placeholder="版本修改说明 (Enter 保存)..." />
+          <button class="wfg-commit-btn">✓ 保存</button>
+        </div>
+        <div class="wfg-history-list"></div>
+        <div class="wfg-pagination"></div>
+      </div>
 
-    const relFile = targetFolder ? `${targetFolder}/${name}` : name;
-    const blankWorkflow = {
-      nodes: [],
-      links: [],
-      extra: { note: "新建空白工作流" }
-    };
+      <!-- Tree Explorer Section -->
+      <div class="wfg-tree-section">
+        <div class="wfg-tree-header">
+          <span>工程文件目录</span>
+        </div>
+        <div class="wfg-tree-container"></div>
+      </div>
+    </div>
+  `;
 
-    try {
-      const res = await fetch("/workflow-git/commit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          file_name: relFile,
-          message: "初始空白工作流",
-          workflow: blankWorkflow
-        })
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "创建工作流失败");
+  // Bind Header actions
+  rootEl.querySelector(".btn-new-folder")?.addEventListener("click", () => createNewFolder(""));
+  rootEl.querySelector(".btn-new-workflow")?.addEventListener("click", () => createNewWorkflow(""));
+  rootEl.querySelector(".btn-refresh")?.addEventListener("click", async () => {
+    await fetchWorkflowsList();
+    if (currentActiveWorkflow) await fetchHistory(currentActiveWorkflow);
+    renderTree();
+    updateActiveCardUI();
+    showToast("列表已刷新");
+  });
 
-      await triggerComfySyncWorkflows();
-      showToast(`📄 工作流已创建: ${relFile}`);
-    } catch (err) {
-      alert(`创建工作流失败: ${err.message}`);
-    }
-  }
+  // Bind Search input
+  const searchInput = rootEl.querySelector(".wfg-search-input");
+  const searchClear = rootEl.querySelector(".wfg-search-clear");
+  searchInput?.addEventListener("input", (e) => {
+    searchQuery = e.target.value;
+    if (searchClear) searchClear.style.display = searchQuery ? "block" : "none";
+    renderTree();
+  });
+  searchClear?.addEventListener("click", () => {
+    searchQuery = "";
+    if (searchInput) searchInput.value = "";
+    searchClear.style.display = "none";
+    renderTree();
+  });
 
-  async promptRenameFolder(folderPath) {
-    const oldName = folderPath.split("/").pop();
-    let newName = prompt(`重命名文件夹 [${oldName}] 为:`, oldName);
-    if (!newName) return;
-    newName = newName.trim().replace(/^[/\\*]+|[/\\*]+$/g, "");
-    if (!newName || newName === oldName) return;
-
-    const parts = folderPath.split("/");
-    parts[parts.length - 1] = newName;
-    const newFullPath = parts.join("/");
-
-    try {
-      const res = await fetch("/workflow-git/folder/rename", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ src: folderPath, dst: newFullPath })
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "重命名文件夹失败");
-
-      await triggerComfySyncWorkflows();
-      showToast(`✏️ 文件夹已重命名为: ${newFullPath}`);
-    } catch (err) {
-      alert(`重命名失败: ${err.message}`);
-    }
-  }
-
-  async confirmDeleteFolder(folderPath) {
-    if (!confirm(`确定要删除文件夹 [${folderPath}] 以及其中的所有工作流与历史版本吗？\n此操作将永久清理磁盘文件，无法撤销！`)) {
-      return;
-    }
-    try {
-      const res = await fetch("/workflow-git/folder/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folder: folderPath })
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "删除文件夹失败");
-
-      await triggerComfySyncWorkflows();
-      showToast(`🗑️ 文件夹已删除: ${folderPath}`);
-    } catch (err) {
-      alert(`删除失败: ${err.message}`);
-    }
-  }
-
-  async moveWorkflow(srcPath, dstFolder = "") {
-    const filename = srcPath.split("/").pop();
-    const dstPath = dstFolder ? `${dstFolder}/${filename}` : filename;
-    if (srcPath === dstPath) return;
-
-    try {
-      const res = await fetch("/workflow-git/move", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ src: srcPath, dst: dstPath })
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "移动失败");
-
-      await triggerComfySyncWorkflows();
-      showToast(`🚚 已移动到: ${dstFolder || "根目录"}`);
-    } catch (err) {
-      alert(`移动失败: ${err.message}`);
-    }
-  }
-
-  async promptMoveWorkflow(srcPath) {
-    try {
-      const res = await fetch("/workflow-git/folders");
-      const data = await res.json();
-      const folders = (data.success && data.folders) ? data.folders : [];
-
-      let optionsStr = "输入目标文件夹序号或路径:\n0: [根目录 workflows/]\n";
-      folders.forEach((f, idx) => {
-        optionsStr += `${idx + 1}: ${f}\n`;
-      });
-
-      const input = prompt(optionsStr, "0");
-      if (input === null) return;
-      const trimmed = input.trim();
-      let targetFolder = "";
-
-      const num = parseInt(trimmed, 10);
-      if (!isNaN(num) && num >= 0 && num <= folders.length) {
-        targetFolder = num === 0 ? "" : folders[num - 1];
-      } else {
-        targetFolder = trimmed.replace(/^[/\\*]+|[/\\*]+$/g, "");
-      }
-
-      await this.moveWorkflow(srcPath, targetFolder);
-    } catch (err) {
-      alert(`获取文件夹列表失败: ${err.message}`);
-    }
-  }
-
-  setupContextMenu(panel) {
-    if (panel._wfgContextMenuBound) return;
-    panel._wfgContextMenuBound = true;
-
-    panel.addEventListener("contextmenu", (e) => {
-      const nodeEl = e.target.closest(".p-treenode, [role='treeitem'], .p-tree-node");
-      if (nodeEl) {
-        const isFolder = isTreeNodeFolder(nodeEl);
-        const relPath = getTreeNodeRelPath(nodeEl);
-
-        if (isFolder && relPath) {
-          e.preventDefault();
-          e.stopPropagation();
-          showCustomContextMenu(e.clientX, e.clientY, [
-            {
-              icon: "📁+",
-              label: "新建子文件夹...",
-              onClick: () => this.promptCreateFolder(relPath)
-            },
-            {
-              icon: "📄+",
-              label: "在此新建工作流...",
-              onClick: () => this.promptCreateWorkflow(relPath)
-            },
-            { divider: true },
-            {
-              icon: "✏️",
-              label: `重命名 [${relPath.split("/").pop()}]`,
-              onClick: () => this.promptRenameFolder(relPath)
-            },
-            {
-              icon: "🗑️",
-              label: `删除文件夹`,
-              danger: true,
-              onClick: () => this.confirmDeleteFolder(relPath)
-            }
-          ]);
-          return;
-        }
-
-        if (!isFolder && relPath && relPath.endsWith(".json")) {
-          return;
-        }
-      }
-
-      // Blank space right-click
+  // Bind Commit input & button
+  const commitInput = rootEl.querySelector(".wfg-commit-input");
+  const commitBtn = rootEl.querySelector(".wfg-commit-btn");
+  const doCommit = async () => {
+    const val = commitInput.value;
+    commitInput.value = "";
+    await commitActiveWorkflow(val);
+  };
+  commitBtn?.addEventListener("click", doCommit);
+  commitInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
       e.preventDefault();
-      showCustomContextMenu(e.clientX, e.clientY, [
-        {
-          icon: "📁+",
-          label: "新建文件夹...",
-          onClick: () => this.promptCreateFolder()
-        },
-        {
-          icon: "📄+",
-          label: "新建工作流...",
-          onClick: () => this.promptCreateWorkflow()
-        },
-        { divider: true },
-        {
-          icon: "🔄",
-          label: "刷新工作流列表",
-          onClick: async () => {
-            await triggerComfySyncWorkflows();
-            showToast("🔄 列表已刷新");
-          }
-        }
-      ]);
-    });
-  }
-
-  setupDragAndDrop(panel) {
-    if (panel._wfgDndBound) return;
-    panel._wfgDndBound = true;
-
-    let activeDragData = null;
-    const rootDropZone = panel.querySelector("#wfg-root-drop-zone");
-
-    const refreshDraggables = () => {
-      const treeNodes = panel.querySelectorAll(".p-treenode, [role='treeitem']");
-      treeNodes.forEach((node) => {
-        const isFolder = isTreeNodeFolder(node);
-        const relPath = getTreeNodeRelPath(node);
-        const contentEl = node.querySelector(".p-treenode-content, [data-pc-section='content']") || node;
-
-        if (!isFolder && relPath && relPath.endsWith(".json")) {
-          contentEl.setAttribute("draggable", "true");
-          contentEl.ondragstart = (e) => {
-            activeDragData = { type: "workflow", relPath, filename: relPath.split("/").pop() };
-            e.dataTransfer.setData("text/plain", JSON.stringify(activeDragData));
-            e.dataTransfer.effectAllowed = "move";
-            if (rootDropZone) rootDropZone.classList.add("active");
-          };
-          contentEl.ondragend = () => {
-            activeDragData = null;
-            if (rootDropZone) rootDropZone.classList.remove("active");
-            panel.querySelectorAll(".wfg-drag-over").forEach((el) => el.classList.remove("wfg-drag-over"));
-          };
-        } else if (isFolder && relPath) {
-          contentEl.ondragover = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            e.dataTransfer.dropEffect = "move";
-            contentEl.classList.add("wfg-drag-over");
-          };
-          contentEl.ondragleave = (e) => {
-            if (!contentEl.contains(e.relatedTarget)) {
-              contentEl.classList.remove("wfg-drag-over");
-            }
-          };
-          contentEl.ondrop = async (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            contentEl.classList.remove("wfg-drag-over");
-            if (rootDropZone) rootDropZone.classList.remove("active");
-
-            let data = activeDragData;
-            if (!data) {
-              try {
-                data = JSON.parse(e.dataTransfer.getData("text/plain"));
-              } catch (err) {}
-            }
-            if (data && data.relPath) {
-              await this.moveWorkflow(data.relPath, relPath);
-            }
-          };
-        }
-      });
-    };
-
-    if (rootDropZone) {
-      rootDropZone.ondragover = (e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        rootDropZone.classList.add("wfg-drag-over");
-      };
-      rootDropZone.ondragleave = () => {
-        rootDropZone.classList.remove("wfg-drag-over");
-      };
-      rootDropZone.ondrop = async (e) => {
-        e.preventDefault();
-        rootDropZone.classList.remove("wfg-drag-over");
-        rootDropZone.classList.remove("active");
-
-        let data = activeDragData;
-        if (!data) {
-          try {
-            data = JSON.parse(e.dataTransfer.getData("text/plain"));
-          } catch (err) {}
-        }
-        if (data && data.relPath) {
-          await this.moveWorkflow(data.relPath, "");
-        }
-      };
+      doCommit();
     }
+  });
 
-    panel.addEventListener("pointerdown", () => setTimeout(refreshDraggables, 200));
-    panel.addEventListener("pointerenter", refreshDraggables);
-    setInterval(refreshDraggables, 2500);
-  }
+  // Initial render
+  updateActiveCardUI();
+  renderTree();
+}
+
+function unmountWorkflowGitPanel() {
+  mountedPanel = null;
+}
+
+// Track active workflow from ComfyUI
+function syncActiveWorkflowFromComfy() {
+  try {
+    const wfStore = app.extensionManager?.workflow;
+    const activeKey = wfStore?.activeWorkflow?.key;
+    if (activeKey && activeKey !== currentActiveWorkflow) {
+      currentActiveWorkflow = activeKey;
+      setCleanBaseline(getNormalizedGraphData());
+      fetchHistory(currentActiveWorkflow);
+      updateActiveCardUI();
+      renderTree();
+    }
+  } catch (e) {}
 }
 
 // Register ComfyUI Extension
 app.registerExtension({
-  name: "comfyui.workflow.version",
-  async setup() {
+  name: "comfyui.workflow.git",
+  async setup(comfyApp) {
     injectCSS();
 
-    // Start lightweight sidebar integrator
-    new SidebarVersionIntegration();
-
-    // Global shortcut Alt + G focuses version note input
-    window.addEventListener("keydown", (e) => {
-      if (e.altKey && (e.key === "g" || e.key === "G")) {
-        e.preventDefault();
-        const input = document.querySelector("#wfg-quick-msg");
-        if (input) {
-          input.focus();
-          input.select();
-        } else {
-          showToast("请先点击左侧【工作流】抽屉打开面板~");
-        }
+    // 1. Hide official workflows sidebar tab
+    try {
+      if (comfyApp.extensionManager && typeof comfyApp.extensionManager.unregisterSidebarTab === "function") {
+        comfyApp.extensionManager.unregisterSidebarTab("workflows");
       }
-    });
+    } catch (e) {
+      console.warn("[WorkflowVersion] Could not unregister official workflows tab:", e);
+    }
 
-    console.log("[WorkflowVersion] Lightweight Version Integration initialized cleanly!");
+    // 2. Register our dedicated, fully-featured sidebar tab
+    try {
+      if (comfyApp.extensionManager && typeof comfyApp.extensionManager.registerSidebarTab === "function") {
+        comfyApp.extensionManager.registerSidebarTab({
+          id: "workflow-git-tab",
+          icon: "pi pi-code-branch",
+          title: "工作流管理",
+          tooltip: "工作流版本与工程管理",
+          type: "custom",
+          render(el) {
+            mountWorkflowGitPanel(el);
+          },
+          destroy() {
+            unmountWorkflowGitPanel();
+          }
+        });
+      }
+    } catch (e) {
+      console.error("[WorkflowVersion] Failed to register custom sidebar tab:", e);
+    }
+
+    // 3. Initial load of workflows
+    await fetchWorkflowsList();
+
+    // 4. Listen for graph modifications to run dirty check
+    const originalAfterConfigure = comfyApp.graph?.afterConfigure;
+    if (comfyApp.graph) {
+      comfyApp.graph.afterConfigure = function (...args) {
+        const ret = originalAfterConfigure ? originalAfterConfigure.apply(this, args) : undefined;
+        syncActiveWorkflowFromComfy();
+        setCleanBaseline(getNormalizedGraphData());
+        return ret;
+      };
+
+      comfyApp.graph.onNodeAdded = () => triggerDirtyCheckDebounced();
+      comfyApp.graph.onNodeRemoved = () => triggerDirtyCheckDebounced();
+      comfyApp.graph.onConnectionChange = () => triggerDirtyCheckDebounced();
+    }
+
+    // 5. Periodic sync with active tab and dirty checking
+    setInterval(() => {
+      syncActiveWorkflowFromComfy();
+      performDirtyCheck();
+    }, 1000);
   }
 });
